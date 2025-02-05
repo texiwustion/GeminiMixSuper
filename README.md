@@ -35,7 +35,7 @@
 - 已安装 Node.js 和 npm
 - 已获取必要的 API 密钥：
   - DeepSeek-R1 API 密钥
-  - Gemini-1206 API 密钥
+  - Gemini-Beta API 密钥
 
 ### 安装
 
