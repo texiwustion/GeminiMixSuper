@@ -3,6 +3,10 @@ import axios from 'axios';
 import dotenv from 'dotenv';
 import mammoth from 'mammoth';
 import pdfParse from 'pdf-parse';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const cheerio = require('cheerio');
 
 dotenv.config();
 
@@ -49,6 +53,143 @@ const GoogleSearch_Send_PROMPT = process.env.GoogleSearch_Send_PROMPT;
 // 用于存储当前任务的信息
 let currentTask = null;
 
+// 添加URL内容缓存
+const urlContentCache = new Map();
+
+// 添加URL内容解析函数
+async function parseUrlContent(url) {
+    // 检查缓存
+    if (urlContentCache.has(url)) {
+        console.log('使用缓存的URL内容:', url);
+        return urlContentCache.get(url);
+    }
+
+    console.log('开始解析URL内容:', url);
+    try {
+        // 使用通用的请求头
+        const headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Cache-Control': 'no-cache',
+            'Pragma': 'no-cache'
+        };
+
+        const response = await axios.get(url, {
+            headers,
+            timeout: 10000,
+            maxRedirects: 5,
+            validateStatus: status => status < 400
+        });
+
+        const $ = cheerio.load(response.data);
+
+        // 1. 移除所有干扰元素
+        const removeSelectors = [
+            'script', 'style', 'iframe', 'video',
+            'header', 'footer', 'nav', 'aside',
+            '[class*="banner"]', '[class*="advert"]', '[class*="ads"]',
+            '[class*="cookie"]', '[class*="popup"]', '[id*="banner"]',
+            '[id*="advert"]', '[id*="ads"]', '[class*="share"]',
+            '[class*="social"]', '[class*="comment"]', '[class*="related"]'
+        ];
+        removeSelectors.forEach(selector => $(selector).remove());
+
+        // 2. 智能识别主要内容区域
+        let mainContent = '';
+        
+        // 2.1 首先尝试查找文章标题
+        const possibleTitles = $('h1').first().text().trim() || 
+                             $('[class*="title"]').first().text().trim() ||
+                             $('title').text().trim();
+
+        // 2.2 查找最可能的主要内容容器
+        const contentSelectors = [
+            'article', '[class*="article"]', '[class*="post"]',
+            '[class*="content"]', 'main', '#main',
+            '.text', '.body', '.entry'
+        ];
+
+        let $mainContainer = null;
+        let maxTextLength = 0;
+
+        // 遍历所有可能的内容容器,找到文本最多的那个
+        contentSelectors.forEach(selector => {
+            $(selector).each((_, element) => {
+                const $element = $(element);
+                const textLength = $element.text().trim().length;
+                if (textLength > maxTextLength) {
+                    maxTextLength = textLength;
+                    $mainContainer = $element;
+                }
+            });
+        });
+
+        // 2.3 如果找到了主容器,提取其中的段落文本
+        if ($mainContainer) {
+            const paragraphs = [];
+            $mainContainer.find('p, h2, h3, h4, li').each((_, element) => {
+                const text = $(element).text().trim();
+                if (text && text.length > 20) { // 只保留有意义的段落
+                    paragraphs.push(text);
+                }
+            });
+            mainContent = paragraphs.join('\n\n');
+        }
+
+        // 2.4 如果主容器没有足够的内容,回退到全文检索
+        if (mainContent.length < 100) {
+            const bodyText = [];
+            $('body').find('p, h2, h3, h4, li').each((_, element) => {
+                const text = $(element).text().trim();
+                if (text && text.length > 20) {
+                    bodyText.push(text);
+                }
+            });
+            mainContent = bodyText.join('\n\n');
+        }
+
+        // 3. 清理和格式化文本
+        let content = mainContent
+            .replace(/\s+/g, ' ')
+            .replace(/\n\s*\n/g, '\n\n')
+            .replace(/([.!?])\s+/g, '$1\n')  // 在句子结尾添加换行
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
+
+        // 4. 添加标题(如果找到了)
+        if (possibleTitles) {
+            content = `${possibleTitles}\n\n${content}`;
+        }
+
+        // 5. 限制长度
+        const maxLength = 8000;
+        if (content.length > maxLength) {
+            content = content.substring(0, maxLength) + '...';
+        }
+
+        // 6. 验证内容质量
+        if (!content || content.length < 50 || 
+            /404|error|not found|访问受限|无权访问|请稍后重试/.test(content)) {
+            throw new Error('未能提取到有效内容');
+        }
+
+        // 7. 格式化最终输出
+        const formattedContent = `[以下是来自 ${url} 的网页内容]\n${content}\n[网页内容结束]`;
+        
+        // 存入缓存
+        urlContentCache.set(url, formattedContent);
+        
+        console.log('成功解析URL内容,长度:', content.length);
+        return formattedContent;
+        
+    } catch (error) {
+        console.error('URL内容解析失败:', error);
+        return `[无法获取 ${url} 的内容: ${error.message}。这可能是因为该网站有访问限制或内容不可用。]`;
+    }
+}
+
 // API 密钥验证中间件
 const apiKeyAuth = (req, res, next) => {
     const apiKey = req.headers.authorization;
@@ -59,28 +200,83 @@ const apiKeyAuth = (req, res, next) => {
     next();
 };
 
+// 添加一个用于简化日志输出的辅助函数
+function sanitizeLogContent(content) {
+    if (Array.isArray(content)) {
+        return content.map(item => {
+            if (item.type === 'image_url' && item.image_url?.url) {
+                return {
+                    ...item,
+                    image_url: {
+                        ...item.image_url,
+                        url: item.image_url.url.substring(0, 20) + '...[base64]...'
+                    }
+                };
+            }
+            return item;
+        });
+    }
+    return content;
+}
+
 // 应用 API 密钥验证中间件
 app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
-    console.log('收到新请求:', JSON.stringify(req.body, null, 2)); // 添加日志
+    // 使用sanitizeLogContent处理日志输出
+    const logSafeBody = {
+        ...req.body,
+        messages: req.body.messages.map(msg => ({
+            ...msg,
+            content: sanitizeLogContent(msg.content)
+        }))
+    };
+    console.log('收到新请求:', JSON.stringify(logSafeBody, null, 2));
     
-    let geminiResponseSent = false; // 标记 Gemini 响应是否已发送
-    
-    // 创建一个新的 CancelTokenSource
+    let geminiResponseSent = false;
     const cancelTokenSource = axios.CancelToken.source();
     
-    // 如果存在当前任务，则等待其取消完成
     if (currentTask) {
         currentTask.cancelTokenSource.cancel('New request received');
-        // 检查响应是否可写，避免在已关闭的流上调用 end()
         if (!currentTask.res.writableEnded) {
             currentTask.res.end();
         }
-        await currentTask.cancelPromise; // 等待取消完成
+        await currentTask.cancelPromise;
         currentTask = null;
     }
 
     try {
         const originalRequest = req.body;
+        
+        // 处理消息中的URL
+        let messages = [...originalRequest.messages];
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            if (typeof msg.content === 'string') {
+                // 查找URL
+                const urlRegex = /(https?:\/\/[^\s]+)/g;
+                const urls = msg.content.match(urlRegex);
+                
+                if (urls) {
+                    console.log('发现URL:', urls);
+                    // 解析所有URL内容
+                    const urlContents = await Promise.all(
+                        urls.map(url => parseUrlContent(url))
+                    );
+                    
+                    // 替换URL为解析后的内容
+                    let newContent = msg.content;
+                    urls.forEach((url, index) => {
+                        newContent = newContent.replace(url, urlContents[index]);
+                    });
+                    
+                    messages[i] = {
+                        ...msg,
+                        content: newContent
+                    };
+                }
+            }
+        }
+        
+        // 使用处理后的消息继续原有流程
         const requestedModel = originalRequest.model;
 
         // 检查模型是否支持
@@ -91,9 +287,9 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
 
         // 处理新的图片消息
         let image_index_content = null;
-        if (hasNewImages(originalRequest.messages)) {
+        if (hasNewImages(messages)) {
             console.log('发现新图片，开始处理'); // 添加日志
-            const images = extractLastImages(originalRequest.messages);
+            const images = extractLastImages(messages);
             console.log(`提取到 ${images.length} 张图片`); // 添加日志
             
             try {
@@ -113,14 +309,14 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
 
         // 判断是否需要联网搜索
         let searchResults = null;
-        const needSearch = await determineIfSearchNeeded(originalRequest.messages);
+        const needSearch = await determineIfSearchNeeded(messages);
         if (needSearch) {
             console.log('需要联网搜索，开始执行搜索');
-            searchResults = await performWebSearch(originalRequest.messages);
+            searchResults = await performWebSearch(messages);
         }
 
         // 准备发送给 R1 的消息
-        let messagesForR1 = [...originalRequest.messages];
+        let messagesForR1 = [...messages];
         
         // 如果有搜索结果，添加到消息中
         if (searchResults) {
@@ -140,7 +336,12 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
             });
         }
 
-        console.log('发送给 R1 的最终消息:', JSON.stringify(messagesForR1, null, 2)); // 添加日志
+        console.log('发送给 R1 的最终消息:', JSON.stringify(messagesForR1.map(msg => ({
+            ...msg,
+            content: Array.isArray(msg.content) 
+                ? sanitizeLogContent(msg.content)
+                : msg.content
+        })), null, 2));
 
         // 移除所有消息中的图片数据，因为 R1 不支持图片
         messagesForR1 = messagesForR1.map(msg => {
@@ -186,7 +387,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
             
             if (!geminiResponseSent && !res.headersSent && !res.writableEnded) {
                 const geminiMessages = [
-                    ...originalRequest.messages,
+                    ...messages,
                     { 
                         role: 'system', 
                         content: '由于前置思考系统暂时无法使用，请直接进行回复。' 
@@ -283,7 +484,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                         
                         // 修改这里：保留原始消息格式（包含图片）
                         const geminiMessages = [
-                            ...originalRequest.messages, // 保持原始消息不变，包含图片数据
+                            ...messages, // 保持原始消息不变，包含图片数据
                             { 
                                 role: 'assistant', 
                                 content: thinkingContent 
@@ -440,7 +641,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
             if (error.code === 'ECONNRESET' || error.code === 'ECONNABORTED') {
                 if (!geminiResponseSent && !res.headersSent && !res.writableEnded) {
                     const geminiMessages = [
-                        ...originalRequest.messages,
+                        ...messages,
                         { 
                             role: 'system', 
                             content: '由于前置思考系统连接中断，请直接进行回复。' 
@@ -470,29 +671,12 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Deepseek API call error:', error);
-        if (!geminiResponseSent && !res.writableEnded && req.body) {
-            console.log('R1 模型出错，准备直接调用 Gemini');
-            
-            const geminiMessages = [
-                ...req.body.messages,
-                { 
-                    role: 'system', 
-                    content: '由于前置思考系统暂时无法使用，请直接进行回复。' 
-                }
-            ];
-
-            try {
-                await callGemini(geminiMessages, res, cancelTokenSource, req.body);
-            } catch (geminiError) {
-                console.error('Both R1 and Gemini failed:', geminiError);
-                if (!res.writableEnded) {
-                    res.status(500).json({ 
-                        error: 'Service unavailable',
-                        message: '服务暂时不可用，请稍后重试'
-                    });
-                }
-            }
+        console.error('请求处理错误:', error);
+        if (!res.headersSent && !res.writableEnded) {
+            res.status(500).json({
+                error: 'Internal server error',
+                message: error.message
+            });
         }
         currentTask?.cancelResolve();
         currentTask = null;
@@ -503,7 +687,14 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
 function callGemini(messages, res, cancelTokenSource, originalRequest) {
     return new Promise((resolve, reject) => {
         let choiceIndex = 0;
-        console.log('callGemini function called with messages:', JSON.stringify(messages, null, 2));
+        // 创建用于日志的安全版本
+        const logSafeMessages = messages.map(msg => ({
+            ...msg,
+            content: Array.isArray(msg.content) 
+                ? sanitizeLogContent(msg.content)
+                : msg.content
+        }));
+        console.log('callGemini function called with messages:', JSON.stringify(logSafeMessages, null, 2));
 
         // 如果是从 R1 错误处理转发来的请求，添加提示信息
         if (originalRequest) {
@@ -579,24 +770,55 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
 
 // 处理图片识别的函数
 async function processImage(imageMessage) {
-    console.log('开始处理图片:', JSON.stringify(imageMessage, null, 2)); // 添加日志
+    // 创建用于日志的安全版本
+    const logSafeImageMessage = {
+        ...imageMessage,
+        image_url: imageMessage.image_url ? {
+            ...imageMessage.image_url,
+            url: imageMessage.image_url.url.substring(0, 20) + '...[base64]...'
+        } : imageMessage.image_url
+    };
+    console.log('开始处理图片:', JSON.stringify(logSafeImageMessage, null, 2));
+    
     try {
         const requestBody = {
             model: Image_MODEL,
             messages: [
                 { role: "system", content: Image_Model_PROMPT },
-                { role: "user", content: [imageMessage] }
+                { role: "user", content: [imageMessage] }  // 保持原始数据用于实际请求
             ],
             max_tokens: Image_Model_MAX_TOKENS,
             temperature: Image_Model_TEMPERATURE,
             stream: false,
         };
         
-        console.log('发送给图像识别模型的请求:', JSON.stringify(requestBody, null, 2)); // 添加日志
+        // 创建用于日志的安全版本
+        const logSafeRequestBody = {
+            ...requestBody,
+            messages: requestBody.messages.map(msg => ({
+                ...msg,
+                content: Array.isArray(msg.content) 
+                    ? msg.content.map(item => {
+                        if (item.type === 'image_url' && item.image_url?.url) {
+                            return {
+                                ...item,
+                                image_url: {
+                                    ...item.image_url,
+                                    url: item.image_url.url.substring(0, 20) + '...[base64]...'
+                                }
+                            };
+                        }
+                        return item;
+                    })
+                    : msg.content
+            }))
+        };
+        
+        console.log('发送给图像识别模型的请求:', JSON.stringify(logSafeRequestBody, null, 2));
         
         const response = await axios.post(
             `${process.env.PROXY_URL3}/v1/chat/completions`,
-            requestBody,
+            requestBody,  // 使用原始数据发送请求
             {
                 headers: {
                     Authorization: `Bearer ${Image_Model_API_KEY}`,
@@ -605,17 +827,36 @@ async function processImage(imageMessage) {
             }
         );
         
-        console.log('图像识别模型响应:', JSON.stringify(response.data, null, 2)); // 添加日志
+        console.log('图像识别模型响应:', JSON.stringify(response.data, null, 2));
         
         const content = response.data.choices[0].message.content;
-        console.log('图片描述结果:', content); // 添加日志
+        console.log('图片描述结果:', content);
         return content;
     } catch (error) {
         console.error('图片处理错误:', error);
         console.error('错误详情:', {
             message: error.message,
             response: error.response?.data,
-            config: error.config
+            config: {
+                ...error.config,
+                data: error.config?.data ? JSON.parse(error.config.data).messages.map(msg => ({
+                    ...msg,
+                    content: Array.isArray(msg.content) 
+                        ? msg.content.map(item => {
+                            if (item.type === 'image_url' && item.image_url?.url) {
+                                return {
+                                    ...item,
+                                    image_url: {
+                                        ...item.image_url,
+                                        url: item.image_url.url.substring(0, 20) + '...[base64]...'
+                                    }
+                                };
+                            }
+                            return item;
+                        })
+                        : msg.content
+                })) : error.config?.data
+            }
         });
         throw error;
     }
@@ -623,7 +864,11 @@ async function processImage(imageMessage) {
 
 // 检查消息是否包含本轮新的图片
 function hasNewImages(messages) {
-    console.log('检查新图片 - 完整消息:', JSON.stringify(messages, null, 2)); // 添加日志
+    const logSafeMessages = messages.map(msg => ({
+        ...msg,
+        content: sanitizeLogContent(msg.content)
+    }));
+    console.log('检查新图片 - 完整消息:', JSON.stringify(logSafeMessages, null, 2));
     const lastMessage = messages[messages.length - 1];
     const hasImages = lastMessage && Array.isArray(lastMessage.content) && 
                      lastMessage.content.some(item => item.type === 'image_url');
@@ -633,14 +878,26 @@ function hasNewImages(messages) {
 
 // 提取最后一条消息中的图片
 function extractLastImages(messages) {
-    console.log('提取图片 - 最后一条消息:', JSON.stringify(messages[messages.length - 1], null, 2)); // 添加日志
     const lastMessage = messages[messages.length - 1];
+    const logSafeMessage = {
+        ...lastMessage,
+        content: sanitizeLogContent(lastMessage.content)
+    };
+    console.log('提取图片 - 最后一条消息:', JSON.stringify(logSafeMessage, null, 2));
     if (!lastMessage || !Array.isArray(lastMessage.content)) {
-        console.log('没有找到图片消息'); // 添加日志
+        console.log('没有找到图片消息');
         return [];
     }
     const images = lastMessage.content.filter(item => item.type === 'image_url');
-    console.log('提取到的图片:', JSON.stringify(images, null, 2)); // 添加日志
+    // 创建用于日志的安全版本
+    const logSafeImages = images.map(img => ({
+        ...img,
+        image_url: img.image_url ? {
+            ...img.image_url,
+            url: img.image_url.url.substring(0, 20) + '...[base64]...'
+        } : img.image_url
+    }));
+    console.log('提取到的图片:', JSON.stringify(logSafeImages, null, 2));
     return images;
 }
 
