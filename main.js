@@ -27,9 +27,10 @@ const Model_output_MODEL = process.env.Model_output_MODEL;
 const Model_output_MAX_TOKENS = Number(process.env.Model_output_MAX_TOKENS);
 const Model_output_CONTEXT_WINDOW = Number(process.env.Model_output_CONTEXT_WINDOW);
 const Model_output_TEMPERATURE = Number(process.env.Model_output_TEMPERATURE);
+const Model_output_WebSearch = process.env.Model_output_WebSearch === 'True';
 
 const RELAY_PROMPT = process.env.RELAY_PROMPT;
-const HYBRID_MODEL_NAME = process.env.HYBRID_MODEL_NAME || 'Gemini1206MIXR1';
+const HYBRID_MODEL_NAME = process.env.HYBRID_MODEL_NAME || 'GeminiMIXR1';
 const OUTPUT_API_KEY = process.env.OUTPUT_API_KEY;
 
 const Image_Model_API_KEY = process.env.Image_Model_API_KEY;
@@ -727,7 +728,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
     }
 });
 
-// 修改 callGemini 函数，添加完整的响应处理
+// 修改 callGemini 函数
 function callGemini(messages, res, cancelTokenSource, originalRequest) {
     return new Promise((resolve, reject) => {
         let choiceIndex = 0;
@@ -740,15 +741,39 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                     return;
                 }
 
+                // 准备请求配置
+                const requestConfig = {
+                    model: Model_output_MODEL,
+                    messages: messages,
+                    max_tokens: Model_output_MAX_TOKENS,
+                    temperature: Model_output_TEMPERATURE,
+                    stream: true,
+                };
+
+                // 如果启用了 WebSearch，添加 function calling 配置
+                if (Model_output_WebSearch) {
+                    requestConfig.tools = [{
+                        type: "function",
+                        function: {
+                            name: "googleSearch",
+                            description: "Search the web for relevant information",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    query: {
+                                        type: "string",
+                                        description: "The search query"
+                                    }
+                                },
+                                required: ["query"]
+                            }
+                        }
+                    }];
+                }
+
                 const geminiResponse = await axios.post(
                     `${process.env.PROXY_URL2}/v1/chat/completions`,
-                    {
-                        model: Model_output_MODEL,
-                        messages: messages,
-                        max_tokens: Model_output_MAX_TOKENS,
-                        temperature: Model_output_TEMPERATURE,
-                        stream: true,
-                    },
+                    requestConfig,
                     {
                         headers: {
                             Authorization: `Bearer ${Model_output_API_KEY}`,
@@ -789,6 +814,15 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                                 if (line.includes('[DONE]')) continue;
                                 
                                 const data = JSON.parse(line.slice(6));
+                                
+                                // 处理 function calling 的响应
+                                if (data.choices[0]?.delta?.tool_calls) {
+                                    const toolCalls = data.choices[0].delta.tool_calls;
+                                    console.log('收到 function calling 请求:', JSON.stringify(toolCalls));
+                                    // 这里可以添加处理 function calling 的逻辑
+                                    continue;
+                                }
+                                
                                 const content = data.choices[0]?.delta?.content || '';
                                 if (content) {
                                     const formattedChunk = {
