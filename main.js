@@ -6,9 +6,11 @@ import pdfParse from 'pdf-parse';
 import { createRequire } from 'module';
 import https from 'https';
 import { HttpsProxyAgent } from 'https-proxy-agent';
-
+import iconv from 'iconv-lite';
 const require = createRequire(import.meta.url);
 const cheerio = require('cheerio');
+const XLSX = require('xlsx');
+const { parse } = require('csv-parse/sync');
 
 dotenv.config();
 
@@ -62,73 +64,26 @@ const urlContentCache = new Map();
 // 添加一个用于存储所有活动请求的数组
 let activeRequests = [];
 
-// 添加一个生成随机请求头的函数
+// 修改控制台输出编码处理部分
+if (process.platform === 'win32') {
+    try {
+        process.stdout.setEncoding('utf8');
+        process.stderr.setEncoding('utf8');
+    } catch (e) {
+        console.error('设置控制台编码失败:', e);
+    }
+}
+
+// 简化随机请求头生成函数
 function generateRandomHeaders() {
-    // 常用的浏览器版本
-    const chromeVersions = ['120.0.0.0', '121.0.0.0', '122.0.0.0'];
-    const firefoxVersions = ['121.0', '122.0', '123.0'];
-    const safariVersions = ['17.2', '17.3', '17.4'];
+    const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36`;
     
-    // 常用的操作系统
-    const platforms = [
-        'Windows NT 10.0; Win64; x64',
-        'Macintosh; Intel Mac OS X 10_15_7',
-        'X11; Linux x86_64',
-        'Windows NT 11.0; Win64; x64'
-    ];
-    
-    // 随机选择浏览器类型和版本
-    const browsers = [
-        {
-            name: 'Chrome',
-            versions: chromeVersions,
-            format: (platform, version) => 
-                `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`
-        },
-        {
-            name: 'Firefox',
-            versions: firefoxVersions,
-            format: (platform, version) =>
-                `Mozilla/5.0 (${platform}; rv:${version}) Gecko/20100101 Firefox/${version}`
-        },
-        {
-            name: 'Safari',
-            versions: safariVersions,
-            format: (platform, version) =>
-                `Mozilla/5.0 (${platform}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${version} Safari/605.1.15`
-        }
-    ];
-
-    const browser = browsers[Math.floor(Math.random() * browsers.length)];
-    const version = browser.versions[Math.floor(Math.random() * browser.versions.length)];
-    const platform = platforms[Math.floor(Math.random() * platforms.length)];
-    
-    // 随机生成 Accept-Language 的权重
-    const langWeight = (Math.random() * 0.2 + 0.8).toFixed(1); // 0.8-1.0之间
-    const engWeight = (Math.random() * 0.2 + 0.6).toFixed(1); // 0.6-0.8之间
-
     return {
-        'User-Agent': browser.format(platform, version),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': `zh-CN,zh;q=${langWeight},en;q=${engWeight}`,
+        'User-Agent': userAgent,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
         'Accept-Encoding': 'gzip, deflate, br',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Sec-Ch-Ua': `"${browser.name}";v="${version}"`,
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': `"${platform.split(';')[0]}"`,
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Upgrade-Insecure-Requests': '1',
-        'Connection': 'keep-alive',
-        // 随机添加 DNT (Do Not Track)
-        ...(Math.random() > 0.5 ? { 'DNT': '1' } : {}),
-        // 随机添加 Referer
-        ...(Math.random() > 0.3 ? {
-            'Referer': 'https://www.google.com/'
-        } : {})
+        'Connection': 'keep-alive'
     };
 }
 
@@ -267,8 +222,8 @@ const apiKeyAuth = (req, res, next) => {
     next();
 };
 
-// 添加一个用于简化日志输出的辅助函数
-function sanitizeLogContent(content) {
+// 合并 sanitizeLogContent 和 sanitizeContent 为一个函数
+function sanitizeContent(content) {
     if (Array.isArray(content)) {
         return content.map(item => {
             if (item.type === 'image_url' && item.image_url?.url) {
@@ -1175,7 +1130,7 @@ async function processImage(imageMessage) {
 function hasNewImages(messages) {
     const logSafeMessages = messages.map(msg => ({
         ...msg,
-        content: sanitizeLogContent(msg.content)
+        content: sanitizeContent(msg.content)
     }));
     console.log('检查新图片 - 完整消息:', JSON.stringify(logSafeMessages, null, 2));
     const lastMessage = messages[messages.length - 1];
@@ -1190,7 +1145,7 @@ function extractLastImages(messages) {
     const lastMessage = messages[messages.length - 1];
     const logSafeMessage = {
         ...lastMessage,
-        content: sanitizeLogContent(lastMessage.content)
+        content: sanitizeContent(lastMessage.content)
     };
     console.log('提取图片 - 最后一条消息:', JSON.stringify(logSafeMessage, null, 2));
     if (!lastMessage || !Array.isArray(lastMessage.content)) {
@@ -1333,6 +1288,136 @@ async function performWebSearch(messages) {
 function removeActiveRequest(modelType) {
     activeRequests = activeRequests.filter(req => req.modelType !== modelType);
     console.log(`${modelType} 请求已完成，从活动请求列表中移除`);
+}
+
+// 修改文件解析函数中的 CSV 部分
+async function parseFile(fileType, fileContent) {
+    try {
+        switch(fileType.toLowerCase()) {
+            case 'application/pdf':
+                const pdfData = await pdfParse(fileContent);
+                return pdfData.text;
+                
+            case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+                const result = await mammoth.extractRawText({buffer: fileContent});
+                return result.value;
+                
+            case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+            case 'application/vnd.ms-excel':
+                // Excel 文件解析
+                const workbook = XLSX.read(fileContent, {
+                    type: 'buffer',
+                    codepage: 936, // 设置编码为 GBK/GB2312
+                    cellStyles: true,
+                    cellDates: true,
+                    cellNF: true,
+                    cellText: true
+                });
+                
+                let excelContent = [];
+                
+                // 遍历所有工作表
+                workbook.SheetNames.forEach(sheetName => {
+                    const sheet = workbook.Sheets[sheetName];
+                    // 使用 sheet_to_json 时添加配置
+                    const sheetData = XLSX.utils.sheet_to_json(sheet, {
+                        header: 1,
+                        raw: false, // 获取格式化的值
+                        dateNF: 'yyyy-mm-dd', // 日期格式
+                        defval: '', // 空单元格的默认值
+                    });
+                    
+                    if (sheetData.length > 0) {
+                        excelContent.push(`\n工作表：${sheetName}`);
+                        
+                        // 处理表头
+                        if (sheetData[0]) {
+                            const headers = sheetData[0].map(header => 
+                                header ? header.toString().trim() : ''
+                            ).filter(Boolean);
+                            if (headers.length > 0) {
+                                excelContent.push(`表头：${headers.join(' | ')}`);
+                            }
+                        }
+                        
+                        // 处理数据行
+                        sheetData.slice(1).forEach(row => {
+                            if (row && row.some(cell => cell !== undefined && cell !== '')) {
+                                const formattedRow = row.map(cell => {
+                                    if (cell === undefined || cell === '') return '';
+                                    // 处理数字、日期等特殊格式
+                                    return cell.toString().trim();
+                                });
+                                if (formattedRow.some(cell => cell !== '')) {
+                                    excelContent.push(formattedRow.join(' | '));
+                                }
+                            }
+                        });
+                    }
+                });
+                
+                return excelContent.join('\n');
+                
+            case 'text/csv':
+                console.log('开始解析 CSV 文件');
+                
+                // 直接使用 GBK 解码
+                const decodedContent = iconv.decode(fileContent, 'gbk');
+                console.log('文件解码完成，开始解析 CSV');
+
+                try {
+                    const records = parse(decodedContent, {
+                        skip_empty_lines: true,
+                        trim: true,
+                        relaxQuotes: true,
+                        relaxColumnCount: true
+                    });
+
+                    if (records.length === 0) {
+                        return '文件为空';
+                    }
+
+                    // 处理表头
+                    const headers = records[0]
+                        .map(header => header.trim())
+                        .filter(Boolean);
+                    console.log('检测到的表头:', headers);
+
+                    // 格式化输出
+                    const formattedRecords = [];
+                    formattedRecords.push('表头: ' + headers.join(' | '));
+
+                    // 处理数据行
+                    for (let i = 1; i < records.length; i++) {
+                        const row = records[i];
+                        if (row.every(cell => !cell)) continue; // 跳过空行
+
+                        // 处理每个单元格，保持原始的列对应关系
+                        const formattedCells = row.map((cell, index) => {
+                            if (!cell) return null;
+                            const header = headers[index] || `列${index + 1}`;
+                            return `${header}: ${cell.trim()}`;
+                        }).filter(Boolean);
+
+                        if (formattedCells.length > 0) {
+                            formattedRecords.push(formattedCells.join(' | '));
+                        }
+                    }
+
+                    return formattedRecords.join('\n');
+
+                } catch (error) {
+                    console.error('CSV 解析错误:', error);
+                    throw error;
+                }
+                
+            default:
+                throw new Error(`不支持的文件类型: ${fileType}`);
+        }
+    } catch (error) {
+        console.error('文件解析错误:', error);
+        throw error;
+    }
 }
 
 app.listen(PROXY_PORT, () => {
