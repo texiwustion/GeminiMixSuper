@@ -4,6 +4,8 @@ import dotenv from 'dotenv';
 import mammoth from 'mammoth';
 import pdfParse from 'pdf-parse';
 import { createRequire } from 'module';
+import https from 'https';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 const require = createRequire(import.meta.url);
 const cheerio = require('cheerio');
@@ -60,8 +62,80 @@ const urlContentCache = new Map();
 // 添加一个用于存储所有活动请求的数组
 let activeRequests = [];
 
+// 添加一个生成随机请求头的函数
+function generateRandomHeaders() {
+    // 常用的浏览器版本
+    const chromeVersions = ['120.0.0.0', '121.0.0.0', '122.0.0.0'];
+    const firefoxVersions = ['121.0', '122.0', '123.0'];
+    const safariVersions = ['17.2', '17.3', '17.4'];
+    
+    // 常用的操作系统
+    const platforms = [
+        'Windows NT 10.0; Win64; x64',
+        'Macintosh; Intel Mac OS X 10_15_7',
+        'X11; Linux x86_64',
+        'Windows NT 11.0; Win64; x64'
+    ];
+    
+    // 随机选择浏览器类型和版本
+    const browsers = [
+        {
+            name: 'Chrome',
+            versions: chromeVersions,
+            format: (platform, version) => 
+                `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version} Safari/537.36`
+        },
+        {
+            name: 'Firefox',
+            versions: firefoxVersions,
+            format: (platform, version) =>
+                `Mozilla/5.0 (${platform}; rv:${version}) Gecko/20100101 Firefox/${version}`
+        },
+        {
+            name: 'Safari',
+            versions: safariVersions,
+            format: (platform, version) =>
+                `Mozilla/5.0 (${platform}) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${version} Safari/605.1.15`
+        }
+    ];
+
+    const browser = browsers[Math.floor(Math.random() * browsers.length)];
+    const version = browser.versions[Math.floor(Math.random() * browser.versions.length)];
+    const platform = platforms[Math.floor(Math.random() * platforms.length)];
+    
+    // 随机生成 Accept-Language 的权重
+    const langWeight = (Math.random() * 0.2 + 0.8).toFixed(1); // 0.8-1.0之间
+    const engWeight = (Math.random() * 0.2 + 0.6).toFixed(1); // 0.6-0.8之间
+
+    return {
+        'User-Agent': browser.format(platform, version),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': `zh-CN,zh;q=${langWeight},en;q=${engWeight}`,
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Cache-Control': 'no-cache',
+        'Pragma': 'no-cache',
+        'Sec-Ch-Ua': `"${browser.name}";v="${version}"`,
+        'Sec-Ch-Ua-Mobile': '?0',
+        'Sec-Ch-Ua-Platform': `"${platform.split(';')[0]}"`,
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Upgrade-Insecure-Requests': '1',
+        'Connection': 'keep-alive',
+        // 随机添加 DNT (Do Not Track)
+        ...(Math.random() > 0.5 ? { 'DNT': '1' } : {}),
+        // 随机添加 Referer
+        ...(Math.random() > 0.3 ? {
+            'Referer': 'https://www.google.com/'
+        } : {})
+    };
+}
+
 // 添加URL内容解析函数
 async function parseUrlContent(url) {
+    console.log('parseUrlContent 函数被调用了！');
+    
     // 检查缓存
     if (urlContentCache.has(url)) {
         console.log('使用缓存的URL内容:', url);
@@ -69,129 +143,118 @@ async function parseUrlContent(url) {
     }
 
     console.log('开始解析URL内容:', url);
-    try {
-        // 使用通用的请求头
-        const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
-        };
+    
+    // 定义请求配置，使用随机请求头
+    const baseConfig = {
+        timeout: Number(process.env.REQUEST_TIMEOUT),
+        maxRedirects: Number(process.env.REQUEST_MAX_REDIRECTS),
+        headers: generateRandomHeaders(),
+        validateStatus: status => status < 400
+    };
 
-        const response = await axios.get(url, {
-            headers,
-            timeout: 10000,
-            maxRedirects: 5,
-            validateStatus: status => status < 400
-        });
+    // 定义重试次数和延迟
+    const maxRetries = Number(process.env.PROXY_RETRY_ATTEMPTS);
+    const retryDelay = Number(process.env.PROXY_RETRY_DELAY);
+    
+    let lastError = null;
 
-        const $ = cheerio.load(response.data);
+    // 重试循环
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            const config = { ...baseConfig };
+            
+            // 第一次尝试不使用代理，之后使用代理
+            if (attempt > 0) {
+                const proxyUrl = process.env.PROXY_URL_PARSE;
+                config.httpsAgent = new HttpsProxyAgent(proxyUrl);
+                console.log(`尝试第 ${attempt} 次，使用代理: ${proxyUrl}`);
+            } else {
+                console.log('第一次尝试，不使用代理');
+            }
 
-        // 1. 移除所有干扰元素
-        const removeSelectors = [
-            'script', 'style', 'iframe', 'video',
-            'header', 'footer', 'nav', 'aside',
-            '[class*="banner"]', '[class*="advert"]', '[class*="ads"]',
-            '[class*="cookie"]', '[class*="popup"]', '[id*="banner"]',
-            '[id*="advert"]', '[id*="ads"]', '[class*="share"]',
-            '[class*="social"]', '[class*="comment"]', '[class*="related"]'
-        ];
-        removeSelectors.forEach(selector => $(selector).remove());
+            const response = await axios.get(url, config);
+            
+            // 使用 cheerio 解析内容
+            const $ = cheerio.load(response.data);
+            
+            // 移除干扰元素
+            $('script, style, iframe, video, [class*="banner"], [class*="advert"], [class*="ads"]').remove();
 
-        // 2. 智能识别主要内容区域
-        let mainContent = '';
-        
-        // 2.1 首先尝试查找文章标题
-        const possibleTitles = $('h1').first().text().trim() || 
-                             $('[class*="title"]').first().text().trim() ||
-                             $('title').text().trim();
+            // 提取标题和主要内容
+            const title = $('h1').first().text().trim() || 
+                         $('[class*="title"]').first().text().trim() || 
+                         $('title').text().trim();
 
-        // 2.2 查找最可能的主要内容容器
-        const contentSelectors = [
-            'article', '[class*="article"]', '[class*="post"]',
-            '[class*="content"]', 'main', '#main',
-            '.text', '.body', '.entry'
-        ];
+            // 查找主要内容
+            const contentSelectors = [
+                'article', '[class*="article"]', '[class*="content"]',
+                'main', '#main', '.text', '.body'
+            ];
 
-        let $mainContainer = null;
-        let maxTextLength = 0;
-
-        // 遍历所有可能的内容容器,找到文本最多的那个
-        contentSelectors.forEach(selector => {
-            $(selector).each((_, element) => {
-                const $element = $(element);
-                const textLength = $element.text().trim().length;
-                if (textLength > maxTextLength) {
-                    maxTextLength = textLength;
-                    $mainContainer = $element;
+            let mainContent = '';
+            for (const selector of contentSelectors) {
+                const $content = $(selector);
+                if ($content.length > 0) {
+                    const paragraphs = [];
+                    $content.find('p, h2, h3, h4, li').each((_, el) => {
+                        const text = $(el).text().trim();
+                        if (text && text.length > 20) {
+                            paragraphs.push(text);
+                        }
+                    });
+                    if (paragraphs.length > 0) {
+                        mainContent = paragraphs.join('\n\n');
+                        break;
+                    }
                 }
-            });
-        });
+            }
 
-        // 2.3 如果找到了主容器,提取其中的段落文本
-        if ($mainContainer) {
-            const paragraphs = [];
-            $mainContainer.find('p, h2, h3, h4, li').each((_, element) => {
-                const text = $(element).text().trim();
-                if (text && text.length > 20) { // 只保留有意义的段落
-                    paragraphs.push(text);
-                }
-            });
-            mainContent = paragraphs.join('\n\n');
+            // 如果没找到主要内容，尝试全文提取
+            if (!mainContent) {
+                const paragraphs = [];
+                $('body').find('p, h2, h3, h4, li').each((_, el) => {
+                    const text = $(el).text().trim();
+                    if (text && text.length > 20) {
+                        paragraphs.push(text);
+                    }
+                });
+                mainContent = paragraphs.join('\n\n');
+            }
+
+            // 格式化内容
+            let content = mainContent
+                .replace(/\s+/g, ' ')
+                .replace(/\n\s*\n/g, '\n\n')
+                .trim();
+
+            // 验证内容质量
+            if (!content || content.length < 50) {
+                throw new Error('未能提取到有效内容');
+            }
+
+            // 添加标题和格式化
+            const formattedContent = `标题：${title}\n\n正文：\n${content}`;
+            
+            // 存入缓存
+            urlContentCache.set(url, formattedContent);
+            
+            console.log(`成功解析URL内容，长度: ${content.length}`);
+            return formattedContent;
+
+        } catch (error) {
+            lastError = error;
+            console.error(`第 ${attempt + 1} 次尝试失败:`, error.message);
+            
+            if (attempt < maxRetries) {
+                // 等待一段时间后重试
+                await new Promise(resolve => setTimeout(resolve, retryDelay));
+            }
         }
-
-        // 2.4 如果主容器没有足够的内容,回退到全文检索
-        if (mainContent.length < 100) {
-            const bodyText = [];
-            $('body').find('p, h2, h3, h4, li').each((_, element) => {
-                const text = $(element).text().trim();
-                if (text && text.length > 20) {
-                    bodyText.push(text);
-                }
-            });
-            mainContent = bodyText.join('\n\n');
-        }
-
-        // 3. 清理和格式化文本
-        let content = mainContent
-            .replace(/\s+/g, ' ')
-            .replace(/\n\s*\n/g, '\n\n')
-            .replace(/([.!?])\s+/g, '$1\n')  // 在句子结尾添加换行
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
-
-        // 4. 添加标题(如果找到了)
-        if (possibleTitles) {
-            content = `${possibleTitles}\n\n${content}`;
-        }
-
-        // 5. 限制长度
-        const maxLength = 8000;
-        if (content.length > maxLength) {
-            content = content.substring(0, maxLength) + '...';
-        }
-
-        // 6. 验证内容质量
-        if (!content || content.length < 50 || 
-            /404|error|not found|访问受限|无权访问|请稍后重试/.test(content)) {
-            throw new Error('未能提取到有效内容');
-        }
-
-        // 7. 格式化最终输出
-        const formattedContent = `[以下是来自 ${url} 的网页内容]\n${content}\n[网页内容结束]`;
-        
-        // 存入缓存
-        urlContentCache.set(url, formattedContent);
-        
-        console.log('成功解析URL内容,长度:', content.length);
-        return formattedContent;
-        
-    } catch (error) {
-        console.error('URL内容解析失败:', error);
-        return `[无法获取 ${url} 的内容: ${error.message}。这可能是因为该网站有访问限制或内容不可用。]`;
     }
+
+    // 所有尝试都失败后
+    console.error('所有尝试都失败了:', lastError);
+    return `[无法获取 ${url} 的内容: ${lastError.message}]`;
 }
 
 // API 密钥验证中间件
@@ -263,6 +326,149 @@ function cancelCurrentTask() {
     }
 }
 
+// 添加一个队列处理 URL 的函数
+async function processUrlQueue(urls) {
+    console.log('开始处理 URL 队列:', urls);
+    const results = [];
+    
+    for (const url of urls) {
+        try {
+            console.log(`正在处理队列中的 URL: ${url}`);
+            const content = await parseUrlContent(url);
+            results.push(content);
+            // 在每个请求之间添加小延迟，避免过快请求
+            await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (error) {
+            console.error(`处理 URL 失败: ${url}`, error);
+            results.push(`[无法解析 ${url}]`);
+        }
+    }
+    
+    return results;
+}
+
+// 修改 preprocessMessages 函数
+async function preprocessMessages(messages) {
+    console.log('开始预处理消息...');
+    let processedMessages = [...messages];
+    let allUrls = new Set();
+    
+    // 遍历所有消息
+    for (let i = 0; i < messages.length; i++) {
+        const message = messages[i];
+        let textContent = '';
+        
+        // 处理不同格式的消息内容
+        if (typeof message.content === 'string') {
+            textContent = message.content;
+        } else if (Array.isArray(message.content)) {
+            // 处理多模态消息数组
+            textContent = message.content
+                .filter(item => item.type === 'text')
+                .map(item => item.text)
+                .join('\n');
+        }
+        
+        if (textContent) {
+            // 简化的 URL 正则表达式
+            const urlRegex = /https?:\/\/[^\s)]+/g;
+            const matches = textContent.match(urlRegex) || [];
+            
+            // 验证并添加 URL
+            matches.forEach(url => {
+                try {
+                    const validUrl = new URL(url.trim());
+                    allUrls.add(validUrl.href);
+                } catch (e) {
+                    console.log(`跳过无效 URL: ${url}`);
+                }
+            });
+        }
+    }
+
+    // 转换为数组并检查缓存
+    const urlsToProcess = [...allUrls].filter(url => !urlContentCache.has(url));
+    
+    if (urlsToProcess.length > 0) {
+        console.log(`找到 ${urlsToProcess.length} 个新的 URL 需要处理:`, urlsToProcess);
+        
+        try {
+            // 使用队列处理新的 URL
+            const newUrlContents = await processUrlQueue(urlsToProcess);
+            
+            // 更新缓存
+            urlsToProcess.forEach((url, index) => {
+                urlContentCache.set(url, newUrlContents[index]);
+            });
+        } catch (error) {
+            console.error('URL 队列处理失败:', error);
+        }
+    }
+
+    // 修改消息处理部分
+    processedMessages = processedMessages.map(message => {
+        let textContent = '';
+        let originalContent = message.content;
+        
+        // 处理不同格式的消息内容
+        if (typeof originalContent === 'string') {
+            textContent = originalContent;
+        } else if (Array.isArray(originalContent)) {
+            // 只处理文本类型的内容
+            const textItems = originalContent.filter(item => item.type === 'text');
+            textContent = textItems.map(item => item.text).join('\n');
+        }
+        
+        if (textContent) {
+            const urlRegex = /https?:\/\/[^\s)]+/g;
+            const matches = textContent.match(urlRegex) || [];
+            
+            if (matches.length > 0) {
+                const messageUrlContents = matches
+                    .map(url => {
+                        try {
+                            const validUrl = new URL(url.trim());
+                            return {
+                                url: validUrl.href,
+                                content: urlContentCache.get(validUrl.href)
+                            };
+                        } catch (e) {
+                            return null;
+                        }
+                    })
+                    .filter(item => item && item.content)
+                    .map(item => `\n--- ${item.url} 的内容 ---\n${item.content}`)
+                    .join('\n\n');
+
+                if (messageUrlContents) {
+                    // 处理数组格式的消息内容
+                    if (Array.isArray(originalContent)) {
+                        return {
+                            ...message,
+                            content: [
+                                ...originalContent.filter(item => item.type !== 'text'),
+                                {
+                                    type: 'text',
+                                    text: textContent + '\n\n解析的网页内容：' + messageUrlContents
+                                }
+                            ]
+                        };
+                    } else {
+                        // 处理字符串格式的消息内容
+                        return {
+                            ...message,
+                            content: `${textContent}\n\n解析的网页内容：${messageUrlContents}`
+                        };
+                    }
+                }
+            }
+        }
+        return message;
+    });
+    
+    return processedMessages;
+}
+
 // 修改主请求处理函数
 app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
     // 确保取消之前的任务
@@ -285,6 +491,9 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
     try {
         const originalRequest = req.body;
         let messages = [...originalRequest.messages];
+        
+        // 预处理消息（解析URL等）
+        messages = await preprocessMessages(messages);
         
         // 检查模型
         const requestedModel = originalRequest.model;
@@ -312,7 +521,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 preprocessTasks.push(imageTask);
             }
 
-            // 判断是否需要联网搜索
+            // 判断是否需要联网搜索（使用处理过的消息）
             const searchTask = determineIfSearchNeeded(messages).then(async needSearch => {
                 if (needSearch) {
                     console.log('需要联网搜索，开始执行搜索');
@@ -1034,7 +1243,7 @@ async function determineIfSearchNeeded(messages) {
     }
 }
 
-// 添加执行联网搜索的函数
+// 修改执行联网搜索的函数
 async function performWebSearch(messages) {
     console.log('开始执行联网搜索');
     try {
@@ -1045,7 +1254,7 @@ async function performWebSearch(messages) {
                 model: GoogleSearch_MODEL,
                 messages: [
                     { role: "system", content: GoogleSearch_PROMPT },
-                    ...messages
+                    ...messages  // 使用已经包含URL内容的消息
                 ],
                 max_tokens: GoogleSearch_Model_MAX_TOKENS,
                 temperature: GoogleSearch_Model_TEMPERATURE,
