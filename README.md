@@ -37,6 +37,7 @@
 - 已获取必要的 API 密钥：
   - DeepSeek-R1 API 密钥
   - Gemini-Beta API 密钥
+- 注意，该项目要求GeminiAPI具备高并发，动态负载和安全过滤，因此直连单API无法在本项目中使用，建议部署类OneAPI的动态负载项目。
 
 ### 安装
 
@@ -68,27 +69,12 @@ DEEPSEEK_R1_MAX_TOKENS=7985
 DEEPSEEK_R1_CONTEXT_WINDOW=2000000
 DEEPSEEK_R1_TEMPERATURE=0.7
 
-# Gemini 1206 配置
-GEMINI_1206_API_KEY=your-api-key
-GEMINI_1206_MODEL=gemini-exp-1206
-GEMINI_1206_MAX_TOKENS=7985
-GEMINI_1206_CONTEXT_WINDOW=2000000
-GEMINI_1206_TEMPERATURE=0.7
-
 # 图像识别模型配置
 Image_Model_API_KEY=your-api-key
 Image_MODEL=gemini-exp-1206
 Image_Model_MAX_TOKENS=7985
 Image_Model_CONTEXT_WINDOW=2000000
 Image_Model_TEMPERATURE=0.4
-
-# 系统提示词配置
-RELAY_PROMPT="前置思考辅助系统已完成思考，结合辅助思考内容和你自己的思考，开始你的正式输出。"
-Image_Model_PROMPT="现在开始你是一个图像识别引擎，请对收到的图片进行详细的内容描述。"
-Image_SendR1_PROMPT="虽然你不是多模态模型，但是已有专业多模态模型帮你转译，所以你可以认为自己是多模态模型。以下是转译内容，用户发送了一个图片，图片内容为："
-
-# 混合模型名称
-HYBRID_MODEL_NAME=Gemini1206MIXR1
 
 # API 密钥
 OUTPUT_API_KEY=your-api-key
