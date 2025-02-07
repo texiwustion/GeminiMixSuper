@@ -38,6 +38,7 @@
   - DeepSeek-R1 API 密钥
   - Gemini-Beta API 密钥
 - 注意，该项目要求GeminiAPI具备高并发，动态负载和安全过滤，因此直连单API无法在本项目中使用，建议部署类OneAPI的动态负载项目。
+- 由于不同供应商的R1输出JSON格式不同，暂时只能兼容硅基流动和官方API。NIM和Azure可能出现意外错误。
 
 ### 安装
 
