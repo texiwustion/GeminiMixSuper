@@ -592,51 +592,57 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 deepseekResponse.data.on('data', (chunk) => {
                     setTimeout(() => {
                         const chunkStr = chunk.toString();
-                        
-                        // 修改日志输出方式
+                
                         try {
                             if (chunkStr.trim() === 'data: [DONE]') {
                                 return;
                             }
                             const deepseekData = JSON.parse(chunkStr.replace(/^data: /, ''));
-                            
-                            // 只输出实际的内容变化
-                            const reasoningContent = deepseekData.choices[0]?.delta?.reasoning_content;
-                            if (reasoningContent) {
-                                process.stdout.write(reasoningContent); // 使用 process.stdout.write 实现流式输出
-                            }
-
-                            // 构造 OpenAI 格式的 SSE 消息
-                            const formattedData = {
-                                id: deepseekData.id,
-                                object: 'chat.completion.chunk',
-                                created: deepseekData.created,
-                                model: HYBRID_MODEL_NAME,
-                                choices: deepseekData.choices.map((choice, index) => {
-                                    let deltaContent = choice.delta.reasoning_content;
-                                    if (!deltaContent) {
-                                        deltaContent = "";
-                                    }
-                                    return {
-                                        delta: {
-                                            content: deltaContent,
-                                        },
-                                        index: index,
-                                        finish_reason: choice.finish_reason,
-                                    };
-                                }),
-                            };
-
-                            if (formattedData.choices[0].delta.content) { // 仅当 delta 中有内容时才发送
-                                if (!geminiResponseSent && !thinkTagSent) { // 检查 Gemini 响应是否已发送和 thinkTagSent 标志位
-                                    formattedData.choices[0].delta.content = "<think>AiModel辅助思考系统已载入。" + formattedData.choices[0].delta.content; // 添加 <think> 标签
-                                    thinkTagSent = true; // 设置 thinkTagSent 为 true
+                
+                            if (
+                                deepseekData &&
+                                deepseekData.choices &&
+                                Array.isArray(deepseekData.choices) &&
+                                deepseekData.choices.length > 0 && // 确保 choices 不为空
+                                deepseekData.choices[0] &&
+                                deepseekData.choices[0].delta
+                            ) {
+                                const reasoningContent = deepseekData.choices[0].delta.reasoning_content;
+                                if (reasoningContent) {
+                                    process.stdout.write(reasoningContent); // 使用 process.stdout.write 实现流式输出
                                 }
-                                res.write(`data: ${JSON.stringify(formattedData)}\n\n`);
+                
+                                // 构造 OpenAI 格式的 SSE 消息
+                                const formattedData = {
+                                    id: deepseekData.id,
+                                    object: 'chat.completion.chunk',
+                                    created: deepseekData.created,
+                                    model: HYBRID_MODEL_NAME,
+                                    choices: deepseekData.choices.map((choice, index) => {
+                                        let deltaContent = choice.delta?.reasoning_content || "";
+                                        return {
+                                            delta: {
+                                                content: deltaContent,
+                                            },
+                                            index: index,
+                                            finish_reason: choice.finish_reason, 
+                                        };
+                                    }),
+                                };
+                                if (formattedData.choices[0]?.delta?.content) { // 仅当 delta 中有内容时才发送
+                                    if (!geminiResponseSent && !thinkTagSent) {// 检查 Gemini 响应是否已发送和 thinkTagSent 标志位
+                                        formattedData.choices[0].delta.content = "<think>AiModel辅助思考系统已载入。" + formattedData.choices[0].delta.content;
+                                        thinkTagSent = true; // 设置 thinkTagSent 为 true
+                                    }
+                                    res.write(`data: ${JSON.stringify(formattedData)}\n\n`);
+                                }
+                            } else {
+                                // 记录 unexpected response
+                                console.warn("Unexpected Deepseek R1 response:", deepseekData);
                             }
 
                             if (!receivedThinkingEnd) {
-                                const reasoningContent = deepseekData.choices[0]?.delta?.reasoning_content || '';
+                                const reasoningContent = deepseekData.choices?.[0]?.delta?.reasoning_content || ''; //更安全的访问
                                 thinkingContent += reasoningContent;
                                 
                                 // 只在 reasoning_content 结束时输出一次完整的思考内容
@@ -754,7 +760,9 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                                     }
                                                 }
                                             } catch (error) {
-                                                console.error('Error processing chunk:', error);
+                                                console.error('Error parsing Deepseek R1 chunk:', error);
+                                                // 可以选择在这里添加额外的错误处理逻辑，例如重试或记录更详细的错误信息
+                                                console.error('Chunk causing error:', chunkStr); // 打印导致错误的数据块
                                             }
                                         });
 
