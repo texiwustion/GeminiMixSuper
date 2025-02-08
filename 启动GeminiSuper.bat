@@ -1,5 +1,5 @@
-@echo off
-echo 正在启动 Node.js 程序 main.js...喵~
+锘緻echo off
+echo 姝ｅ湪鍚姩 Node.js 绋嬪簭 main.js...鍠祣
 cd /d "%~dp0"
 node main.js
 pause
