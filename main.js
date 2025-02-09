@@ -51,7 +51,7 @@ const Model_output_API_KEY = process.env.Model_output_API_KEY;
 const Model_output_MODEL = process.env.Model_output_MODEL;
 const Model_output_MAX_TOKENS = Number(process.env.Model_output_MAX_TOKENS);
 const Model_output_CONTEXT_WINDOW = Number(process.env.Model_output_CONTEXT_WINDOW);
-const Model_output_TEMPERATURE = process.env.Model_output_TEMPERATURE;
+const Model_output_TEMPERATURE = Number(process.env.Model_output_TEMPERATURE);
 const Model_output_WebSearch = process.env.Model_output_WebSearch === 'True';
 
 const RELAY_PROMPT = process.env.RELAY_PROMPT;
@@ -62,7 +62,7 @@ const Image_Model_API_KEY = process.env.Image_Model_API_KEY;
 const Image_MODEL = process.env.Image_MODEL;
 const Image_Model_MAX_TOKENS = Number(process.env.Image_Model_MAX_TOKENS);
 const Image_Model_CONTEXT_WINDOW = Number(process.env.Image_Model_CONTEXT_WINDOW);
-const Image_Model_TEMPERATURE = process.env.Image_Model_TEMPERATURE;
+const Image_Model_TEMPERATURE = Number(process.env.Image_Model_TEMPERATURE);
 const Image_Model_PROMPT = process.env.Image_Model_PROMPT;
 const Image_SendR1_PROMPT = process.env.Image_SendR1_PROMPT;
 
