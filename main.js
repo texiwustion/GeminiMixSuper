@@ -789,8 +789,23 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
 
                                         // 修改结束处理
                                         geminiResponse.data.on('end', () => {
-                                            logger.info({ logType: 'gemini_response', message: '\n\nGemini response ended.' }); // 添加换行使                                        geminiResponse.data.on('error', (error) => {
-                                            logger.error({ logType: 'gemini_response', message: 'Gemini response error:', error: error.message });
+                                            logger.info({ logType: 'gemini_response', message: '\n\nGemini response ended.' }); // 添加换行使
+                                            res.write('data: [DONE]\n\n');
+                                            
+                                            if (!res.writableEnded) {
+                                                res.end();
+                                            }
+                                            currentTask = null;
+                                            removeActiveRequest('Gemini');
+                                        });
+
+                                        geminiResponse.data.on('error', (error) => {
+                                            logger.error({ 
+                                                logType: 'gemini_response', 
+                                                message: 'Gemini response error:', 
+                                                error: error.message 
+                                            });
+                                            
                                             if (!res.writableEnded) {
                                                 res.end();
                                             }
