@@ -1074,7 +1074,7 @@ async function processImage(imageMessage) {
         ...imageMessage,
         image_url: imageMessage.image_url ? {
             ...imageMessage.image_url,
-            url: imageMessage.image_url.substring(0, 20) + '...[base64]...'
+            url: imageMessage.image_url.url.substring(0, 20) + '...[base64]...'
         } : imageMessage.image_url
     };
     logger.info({ logType: 'image_processing', message: '开始处理图片:', data: JSON.stringify(logSafeImageMessage, null, 2) });
