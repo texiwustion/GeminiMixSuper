@@ -789,7 +789,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
 
                                         // 修改结束处理
                                         geminiResponse.data.on('end', () => {
-                                            logger.info({ logType: 'gemini_response', message: '\n\nGemini response ended.' }); // 添加换行使
+                                            logger.info({ logType: 'gemini_response', message: '\n\nGemini response ended.' }); // 添加换行使输出更清晰
                                             res.write('data: [DONE]\n\n');
                                             
                                             if (!res.writableEnded) {
@@ -1074,7 +1074,7 @@ async function processImage(imageMessage) {
         ...imageMessage,
         image_url: imageMessage.image_url ? {
             ...imageMessage.image_url,
-            url: imageMessage.image_url.substring(0, 20) + '...[base64]...'
+            url: imageMessage.image_url.url.substring(0, 20) + '...[base64]...'
         } : imageMessage.image_url
     };
     logger.info({ logType: 'image_processing', message: '开始处理图片:', data: JSON.stringify(logSafeImageMessage, null, 2) });
