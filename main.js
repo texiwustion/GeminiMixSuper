@@ -502,9 +502,25 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
             // 等待所有预处理任务完成
             await Promise.all([searchTask]);
 
+            // 在发送给 R1 之前过滤掉图片数据
+            let messagesForR1 = [...messages];
+            messagesForR1 = messagesForR1.map(message => {
+                if (Array.isArray(message.content)) {
+                    // 只保留文本内容
+                    const textContents = message.content
+                        .filter(item => item.type === 'text')
+                        .map(item => item.text);
+                    return {
+                        ...message,
+                        content: textContents.join('\n')
+                    };
+                }
+                return message;
+            });
+
             // 准备发送给 R1 的消息
-            let messagesForR1 = [
-                ...messages,
+            messagesForR1 = [
+                ...messagesForR1,  // 使用过滤后的消息
                 ...(searchResults ? [{
                     role: 'system',
                     content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
@@ -519,7 +535,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 }
             ];
 
-            // R1 请求
+            // R1 请求使用过滤后的消息
             const r1CancelToken = axios.CancelToken.source();
             activeRequests.push({ 
                 modelType: 'R1', 
@@ -530,7 +546,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 `${PROXY_URL}/v1/chat/completions`,
                 {
                     model: DEEPSEEK_R1_MODEL,
-                    messages: messagesForR1,
+                    messages: messagesForR1,  // 使用过滤后的消息
                     max_tokens: DEEPSEEK_R1_MAX_TOKENS,
                     temperature: DEEPSEEK_R1_TEMPERATURE,
                     stream: true,
@@ -568,8 +584,9 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 console.log('切换到 Gemini 模型');
                 const geminiCancelToken = axios.CancelToken.source();
                 
+                // 在准备 Gemini 消息时使用原始消息（包含图片）
                 const geminiMessages = [
-                    ...messages,
+                    ...messages,  // 使用原始消息，保留图片数据
                     ...(searchResults ? [{
                         role: 'system',
                         content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
