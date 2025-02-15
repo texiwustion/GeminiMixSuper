@@ -1054,7 +1054,7 @@ async function processImage(imageMessage) {
         const requestBody = {
             model: Image_MODEL,
             messages: [
-                { role: "system", content: Image_Model_PROMPT },
+                { role: "user", content: Image_Model_PROMPT },
                 { role: "user", content: [imageMessage] }  // 保持原始数据用于实际请求
             ],
             max_tokens: Image_Model_MAX_TOKENS,
