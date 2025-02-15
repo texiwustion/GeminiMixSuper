@@ -1180,7 +1180,7 @@ async function determineIfSearchNeeded(messages) {
             {
                 model: process.env.SearchDetermine_MODEL, // 改用新的小模型
                 messages: [
-                    { role: "system", content: process.env.GoogleSearch_Determine_PROMPT },
+                    { role: "user", content: process.env.GoogleSearch_Determine_PROMPT },
                     ...messages
                 ],
                 max_tokens: Number(process.env.SearchDetermine_Model_MAX_TOKENS), // 使用对应的参数
@@ -1241,7 +1241,7 @@ async function performWebSearch(messages) {
             {
                 model: GoogleSearch_MODEL,
                 messages: [
-                    { role: "system", content: "Please search the web for the following query and provide relevant information:" },
+                    { role: "user", content: "Please search the web for the following query and provide relevant information:" },
                     { role: "user", content: searchTerms }
                 ],
                 max_tokens: GoogleSearch_Model_MAX_TOKENS,
