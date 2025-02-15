@@ -706,7 +706,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                                 'Content-Type': 'application/json',
                                             },
                                             responseType: 'stream',
-                                            cancelToken: geminiCancelToken.token, // 使用新的 cancelToken
+                                            cancelToken: geminiCancelToken.token,
                                             timeout: 30000,
                                             'axios-retry': {
                                                 retries: 3,
@@ -722,10 +722,8 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                             },
                                         }
                                     ).then(geminiResponse => {
-                                        console.log('Gemini API call successful - from Deepseek flow'); // 修改日志
-                                        console.log('Gemini API request config:', geminiResponse.config); // 打印请求配置
-                                        console.log('Gemini API response data:', geminiResponse.data); // 打印响应数据
-                                        geminiResponseSent = true; // 标记 Gemini 响应已发送
+                                        console.log('Gemini 模型开始输出');
+                                        geminiResponseSent = true;
                                         res.write('data: {"choices": [{"delta": {"content": "\\n辅助思考已结束，以上辅助思考内容用户不可见，请MODEL开始以中文作为主要语言进行正式输出</think>"}, "index": 0, "finish_reason": null}]}\n\n'); // 输出 </think> 标签
                                         geminiResponse.data.on('data', chunk => {
                                             try {
@@ -779,7 +777,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                         });
 
                                         geminiResponse.data.on('error', (error) => {
-                                            console.error('Gemini response error:', error);
+                                            console.error('Gemini 模型调用失败');
                                             if (!res.writableEnded) {
                                                 res.end();
                                             }
@@ -787,27 +785,26 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                             removeActiveRequest('Gemini');
                                         });
                                     }).catch(error => {
-                                        console.error('Gemini API call error:', error);
-                                        console.error('Gemini API request config:', error.config);
-                                        console.error('Gemini API response data:', error.response?.data);
+                                        console.error('Gemini 模型调用失败');
+                                        console.error('Gemini 请求重试失败，返回 503 错误');
                                         
                                         if (!res.writableEnded) {
                                             let errorMessage = 'Error calling Gemini API';
                                             if (error.code === 'ECONNABORTED') {
-                                                errorMessage = 'Gemini API request timed out.';
-                                                res.status(504).send({ error: errorMessage }); // 504 Gateway Timeout
+                                                errorMessage = 'Gemini 请求超时';
+                                                res.status(504).send({ error: errorMessage });
                                             } else if (error.response?.status === 429) {
-                                                errorMessage = 'Gemini API rate limit exceeded.';
-                                                res.status(429).send({ error: errorMessage, details: error.response?.data }); // 429 Too Many Requests
-                                            } else if (error.config?.__retryCount >= 3) { // 假设重试 3 次后失败
-                                                errorMessage = 'Gemini API request failed after multiple retries.';
-                                                console.log('返回 503 错误 - callGemini 函数中，Gemini API 多次重试失败'); // 添加日志
-                                                res.status(503).send({ error: errorMessage }); // 503 Service Unavailable
+                                                errorMessage = 'Gemini 请求频率超限';
+                                                res.status(429).send({ error: errorMessage });
+                                            } else if (error.config?.__retryCount >= 3) {
+                                                errorMessage = 'Gemini 多次重试后失败';
+                                                console.log('Gemini 请求重试失败，返回 503 错误');
+                                                res.status(503).send({ error: errorMessage });
                                             }
                                             else {
-                                                res.status(error.response?.status || 500).send({ error: `${errorMessage}: ${error.message}`, details: error.response?.data?.message || error.response?.data }); // 500 Internal Server Error 或 Gemini 返回的状态码, 只发送 message 或 简化的 data
+                                                res.status(error.response?.status || 500).send({ error: errorMessage });
                                             }
-                                            res.end(); // 确保在 Gemini API 错误时也结束响应
+                                            res.end();
                                         }
                                         currentTask = null;
                                         removeActiveRequest('Gemini');
@@ -1236,7 +1233,7 @@ async function performWebSearch(messages) {
         );
 
         const searchTerms = searchTermsResponse.data.choices[0].message.content;
-        console.log('搜索关键词:', searchTerms);
+        console.log('生成的搜索关键词:\n', searchTerms); // 简化日志输出
 
         // 第二步：执行实际的搜索
         const searchResponse = await axios.post(
@@ -1286,12 +1283,7 @@ async function performWebSearch(messages) {
         console.log('搜索结果:', searchResults);
         return searchResults;
     } catch (error) {
-        console.error('联网搜索出错:', error);
-        console.error('错误详情:', {
-            message: error.message,
-            response: error.response?.data,
-            config: error.config
-        });
+        console.error('搜索关键词生成失败'); // 简化错误日志
         return null;
     }
 }
