@@ -308,16 +308,21 @@ async function preprocessMessages(messages) {
     let processedMessages = [...messages];
     let allUrls = new Set();
     
-    // 清理消息中的图片数据
+    // 修改图片数据的处理方式，保留图片数据
     processedMessages = processedMessages.map(message => {
         if (Array.isArray(message.content)) {
-            // 如果是数组格式的消息内容，只保留文本内容
-            const textContents = message.content
-                .filter(item => item.type === 'text')
-                .map(item => item.text);
+            // 保留图片数据，只处理文本内容
             return {
                 ...message,
-                content: textContents.join('\n')
+                content: message.content.map(item => {
+                    if (item.type === 'text') {
+                        return item;
+                    } else if (item.type === 'image_url') {
+                        // 保持图片数据不变
+                        return item;
+                    }
+                    return item;
+                })
             };
         }
         return message;
@@ -905,16 +910,10 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
         
         const makeRequest = async () => {
             try {
-                // 检查响应是否已经发送
-                if (res.headersSent || res.writableEnded) {
-                    console.log('响应已经发送，取消 Gemini 请求');
-                    return;
-                }
-
-                // 准备请求配置
+                // 保持原始消息格式，包括图片数据
                 const requestConfig = {
                     model: Model_output_MODEL,
-                    messages: messages,
+                    messages: messages,  // 直接使用原始消息，不做过滤
                     max_tokens: Model_output_MAX_TOKENS,
                     temperature: Model_output_TEMPERATURE,
                     stream: true,
