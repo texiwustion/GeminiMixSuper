@@ -2,38 +2,17 @@ import express from 'express';
 import axios from 'axios';
 import dotenv from 'dotenv';
 import mammoth from 'mammoth';
+import pdfParse from 'pdf-parse';
 import { createRequire } from 'module';
 import https from 'https';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import iconv from 'iconv-lite';
 const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
 const cheerio = require('cheerio');
 const XLSX = require('xlsx');
 const { parse } = require('csv-parse/sync');
 
-import winston from 'winston';
-
 dotenv.config();
-
-// 配置 Winston 日志
-const logger = winston.createLogger({
-    level: 'info', // 默认日志级别
-    format: winston.format.combine(
-        winston.format.timestamp({
-            format: 'YYYY-MM-DD HH:mm:ss'
-        }),
-        winston.format.json()
-    ),
-    transports: [
-        new winston.transports.Console(), // 输出到控制台
-        new winston.transports.File({
-            filename: 'logs/app.log',
-            maxsize: 1024 * 1024, // 设置日志文件最大大小为1M
-            maxFiles: 10 // 设置日志文件最大数量为10个
-        }) // 输出到文件
-    ]
-});
 
 const app = express();
 app.use(express.json({ limit: '20mb' }));
@@ -91,14 +70,14 @@ if (process.platform === 'win32') {
         process.stdout.setEncoding('utf8');
         process.stderr.setEncoding('utf8');
     } catch (e) {
-        logger.error({ logType: 'system', message: '设置控制台编码失败', error: e });
+        console.error('设置控制台编码失败:', e);
     }
 }
 
 // 简化随机请求头生成函数
 function generateRandomHeaders() {
     const userAgent = `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36`;
-
+    
     return {
         'User-Agent': userAgent,
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -110,16 +89,16 @@ function generateRandomHeaders() {
 
 // 添加URL内容解析函数
 async function parseUrlContent(url) {
-    logger.info({ logType: 'url_parsing', message: 'parseUrlContent 函数被调用了！' });
-
+    console.log('parseUrlContent 函数被调用了！');
+    
     // 检查缓存
     if (urlContentCache.has(url)) {
-        logger.info({ logType: 'url_parsing', message: '使用缓存的URL内容:', url });
+        console.log('使用缓存的URL内容:', url);
         return urlContentCache.get(url);
     }
 
-    logger.info({ logType: 'url_parsing', message: '开始解析URL内容:', url });
-
+    console.log('开始解析URL内容:', url);
+    
     // 定义请求配置，使用随机请求头
     const baseConfig = {
         timeout: Number(process.env.REQUEST_TIMEOUT),
@@ -131,35 +110,35 @@ async function parseUrlContent(url) {
     // 定义重试次数和延迟
     const maxRetries = Number(process.env.PROXY_RETRY_ATTEMPTS);
     const retryDelay = Number(process.env.PROXY_RETRY_DELAY);
-
+    
     let lastError = null;
 
     // 重试循环
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         try {
             const config = { ...baseConfig };
-
+            
             // 第一次尝试不使用代理，之后使用代理
             if (attempt > 0) {
                 const proxyUrl = process.env.PROXY_URL_PARSE;
                 config.httpsAgent = new HttpsProxyAgent(proxyUrl);
-                logger.info({ logType: 'proxy', message: `尝试第 ${attempt} 次，使用代理: ${proxyUrl}` });
+                console.log(`尝试第 ${attempt} 次，使用代理: ${proxyUrl}`);
             } else {
-                logger.info({ logType: 'proxy', message: '第一次尝试，不使用代理' });
+                console.log('第一次尝试，不使用代理');
             }
 
             const response = await axios.get(url, config);
-
+            
             // 使用 cheerio 解析内容
             const $ = cheerio.load(response.data);
-
+            
             // 移除干扰元素
             $('script, style, iframe, video, [class*="banner"], [class*="advert"], [class*="ads"]').remove();
 
             // 提取标题和主要内容
-            const title = $('h1').first().text().trim() ||
-                $('[class*="title"]').first().text().trim() ||
-                $('title').text().trim();
+            const title = $('h1').first().text().trim() || 
+                         $('[class*="title"]').first().text().trim() || 
+                         $('title').text().trim();
 
             // 查找主要内容
             const contentSelectors = [
@@ -210,17 +189,17 @@ async function parseUrlContent(url) {
 
             // 添加标题和格式化
             const formattedContent = `标题：${title}\n\n正文：\n${content}`;
-
+            
             // 存入缓存
             urlContentCache.set(url, formattedContent);
-
-            logger.info({ logType: 'url_parsing', message: `成功解析URL内容，长度: ${content.length}` });
+            
+            console.log(`成功解析URL内容，长度: ${content.length}`);
             return formattedContent;
 
         } catch (error) {
             lastError = error;
-            logger.error({ logType: 'url_parsing', message: `第 ${attempt + 1} 次尝试失败:`, error: error.message });
-
+            console.error(`第 ${attempt + 1} 次尝试失败:`, error.message);
+            
             if (attempt < maxRetries) {
                 // 等待一段时间后重试
                 await new Promise(resolve => setTimeout(resolve, retryDelay));
@@ -229,7 +208,7 @@ async function parseUrlContent(url) {
     }
 
     // 所有尝试都失败后
-    logger.error({ logType: 'url_parsing', message: '所有尝试都失败了:', error: lastError });
+    console.error('所有尝试都失败了:', lastError);
     return `[无法获取 ${url} 的内容: ${lastError.message}]`;
 }
 
@@ -268,17 +247,17 @@ function cancelCurrentTask() {
         return;
     }
 
-    logger.info({ logType: 'task_management', message: '收到新请求，取消当前任务...' });
-
+    console.log('收到新请求，取消当前任务...');
+    
     try {
         // 1. 取消所有进行中的 API 请求
         activeRequests.forEach(request => {
             if (request.cancelTokenSource) {
                 request.cancelTokenSource.cancel('收到新请求');
-                logger.info({ logType: 'task_management', message: `已取消 ${request.modelType} 的请求` });
+                console.log(`已取消 ${request.modelType} 的请求`);
             }
         });
-
+        
         // 2. 结束当前响应流
         if (currentTask.res && !currentTask.res.writableEnded) {
             currentTask.res.write('data: {"choices": [{"delta": {"content": "\n\n[收到新请求，开始重新生成]"}, "index": 0, "finish_reason": "stop"}]}\n\n');
@@ -290,13 +269,13 @@ function cancelCurrentTask() {
         if (currentTask.cancelTokenSource) {
             currentTask.cancelTokenSource.cancel('收到新请求');
         }
-
+        
         // 4. 清理资源
         activeRequests = [];
         currentTask = null;
 
     } catch (error) {
-        logger.error({ logType: 'task_management', message: '取消任务时出错:', error: error.message });
+        console.error('取消任务时出错:', error);
         activeRequests = [];
         currentTask = null;
     }
@@ -304,36 +283,51 @@ function cancelCurrentTask() {
 
 // 添加一个队列处理 URL 的函数
 async function processUrlQueue(urls) {
-    logger.info({ logType: 'url_queue', message: '开始处理 URL 队列:', urls });
+    console.log('开始处理 URL 队列:', urls);
     const results = [];
-
+    
     for (const url of urls) {
         try {
-            logger.info({ logType: 'url_queue', message: `正在处理队列中的 URL: ${url}` });
+            console.log(`正在处理队列中的 URL: ${url}`);
             const content = await parseUrlContent(url);
             results.push(content);
             // 在每个请求之间添加小延迟，避免过快请求
             await new Promise(resolve => setTimeout(resolve, 500));
         } catch (error) {
-            logger.error({ logType: 'url_queue', message: `处理 URL 失败: ${url}`, error: error.message });
+            console.error(`处理 URL 失败: ${url}`, error);
             results.push(`[无法解析 ${url}]`);
         }
     }
-
+    
     return results;
 }
 
-// 修改 preprocessMessages 函数
+// 修改 preprocessMessages 函数，添加消息清理功能
 async function preprocessMessages(messages) {
-    logger.info({ logType: 'message_processing', message: '开始预处理消息...' });
+    console.log('开始预处理消息...');
     let processedMessages = [...messages];
     let allUrls = new Set();
+    
+    // 清理消息中的图片数据
+    processedMessages = processedMessages.map(message => {
+        if (Array.isArray(message.content)) {
+            // 如果是数组格式的消息内容，只保留文本内容
+            const textContents = message.content
+                .filter(item => item.type === 'text')
+                .map(item => item.text);
+            return {
+                ...message,
+                content: textContents.join('\n')
+            };
+        }
+        return message;
+    });
 
     // 遍历所有消息
     for (let i = 0; i < messages.length; i++) {
         const message = messages[i];
         let textContent = '';
-
+        
         // 处理不同格式的消息内容
         if (typeof message.content === 'string') {
             textContent = message.content;
@@ -344,19 +338,19 @@ async function preprocessMessages(messages) {
                 .map(item => item.text)
                 .join('\n');
         }
-
+        
         if (textContent) {
             // 简化的 URL 正则表达式
             const urlRegex = /https?:\/\/[^\s)]+/g;
             const matches = textContent.match(urlRegex) || [];
-
+            
             // 验证并添加 URL
             matches.forEach(url => {
                 try {
                     const validUrl = new URL(url.trim());
                     allUrls.add(validUrl.href);
                 } catch (e) {
-                    logger.info({ logType: 'message_processing', message: `跳过无效 URL: ${url}` });
+                    console.log(`跳过无效 URL: ${url}`);
                 }
             });
         }
@@ -364,20 +358,20 @@ async function preprocessMessages(messages) {
 
     // 转换为数组并检查缓存
     const urlsToProcess = [...allUrls].filter(url => !urlContentCache.has(url));
-
+    
     if (urlsToProcess.length > 0) {
-        logger.info({ logType: 'message_processing', message: `找到 ${urlsToProcess.length} 个新的 URL 需要处理:`, urls: urlsToProcess });
-
+        console.log(`找到 ${urlsToProcess.length} 个新的 URL 需要处理:`, urlsToProcess);
+        
         try {
             // 使用队列处理新的 URL
             const newUrlContents = await processUrlQueue(urlsToProcess);
-
+            
             // 更新缓存
             urlsToProcess.forEach((url, index) => {
                 urlContentCache.set(url, newUrlContents[index]);
             });
         } catch (error) {
-            logger.error({ logType: 'message_processing', message: 'URL 队列处理失败:', error: error.message });
+            console.error('URL 队列处理失败:', error);
         }
     }
 
@@ -385,7 +379,7 @@ async function preprocessMessages(messages) {
     processedMessages = processedMessages.map(message => {
         let textContent = '';
         let originalContent = message.content;
-
+        
         // 处理不同格式的消息内容
         if (typeof originalContent === 'string') {
             textContent = originalContent;
@@ -394,11 +388,11 @@ async function preprocessMessages(messages) {
             const textItems = originalContent.filter(item => item.type === 'text');
             textContent = textItems.map(item => item.text).join('\n');
         }
-
+        
         if (textContent) {
             const urlRegex = /https?:\/\/[^\s)]+/g;
             const matches = textContent.match(urlRegex) || [];
-
+            
             if (matches.length > 0) {
                 const messageUrlContents = matches
                     .map(url => {
@@ -441,7 +435,7 @@ async function preprocessMessages(messages) {
         }
         return message;
     });
-
+    
     return processedMessages;
 }
 
@@ -449,17 +443,17 @@ async function preprocessMessages(messages) {
 app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
     // 确保取消之前的任务
     if (currentTask) {
-        logger.info({ logType: 'request_handling', message: '存在正在进行的任务，准备取消...' });
+        console.log('存在正在进行的任务，准备取消...');
         cancelCurrentTask();
         // 等待一小段时间确保清理完成
         await new Promise(resolve => setTimeout(resolve, 100));
     }
 
-    logger.info({ logType: 'request_handling', message: '开始处理新请求...' });
-
+    console.log('开始处理新请求...');
+    
     // 创建新任务
     const cancelTokenSource = axios.CancelToken.source();
-    currentTask = {
+    currentTask = { 
         res,
         cancelTokenSource
     };
@@ -467,10 +461,21 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
     try {
         const originalRequest = req.body;
         let messages = [...originalRequest.messages];
+        
+        // 检查新图片并处理
+        let image_index_content = null;
+        if (hasNewImages(messages)) {
+            console.log('发现新图片，开始处理');
+            const images = extractLastImages(messages);
+            const imageDescriptions = await Promise.all(
+                images.map(img => processImage(img))
+            );
+            image_index_content = imageDescriptions.join('\n');
+        }
 
-        // 预处理消息（解析URL等）
+        // 预处理消息（解析URL等，同时清理图片数据）
         messages = await preprocessMessages(messages);
-
+        
         // 检查模型
         const requestedModel = originalRequest.model;
         if (requestedModel !== HYBRID_MODEL_NAME) {
@@ -480,34 +485,17 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
         try {
             // 预处理阶段
             let searchResults = null;
-            let image_index_content = null;
-
-            // 并行执行预处理任务
-            const preprocessTasks = [];
-
-            // 检查新图片
-            if (hasNewImages(messages)) {
-                logger.info({ logType: 'image_processing', message: '发现新图片，开始处理' });
-                const images = extractLastImages(messages);
-                const imageTask = Promise.all(
-                    images.map(img => processImage(img))
-                ).then(descriptions => {
-                    image_index_content = descriptions.join('\n');
-                });
-                preprocessTasks.push(imageTask);
-            }
 
             // 判断是否需要联网搜索（使用处理过的消息）
             const searchTask = determineIfSearchNeeded(messages).then(async needSearch => {
                 if (needSearch) {
-                    logger.info({ logType: 'web_search', message: '需要联网搜索，开始执行搜索' });
+                    console.log('需要联网搜索，开始执行搜索');
                     searchResults = await performWebSearch(messages);
                 }
             });
-            preprocessTasks.push(searchTask);
 
             // 等待所有预处理任务完成
-            await Promise.all(preprocessTasks);
+            await Promise.all([searchTask]);
 
             // 准备发送给 R1 的消息
             let messagesForR1 = [
@@ -520,17 +508,17 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                     role: 'system',
                     content: `${process.env.Image_SendR1_PROMPT}${image_index_content}`
                 }] : []),
-                {
-                    role: "system",
-                    content: process.env.Think_Lora_PROMPT
+                { 
+                    role: "system", 
+                    content: process.env.Think_Lora_PROMPT 
                 }
             ];
 
             // R1 请求
             const r1CancelToken = axios.CancelToken.source();
-            activeRequests.push({
-                modelType: 'R1',
-                cancelTokenSource: r1CancelToken
+            activeRequests.push({ 
+                modelType: 'R1', 
+                cancelTokenSource: r1CancelToken 
             });
 
             const deepseekResponse = await axios.post(
@@ -564,26 +552,26 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                     }
                 }
             ).catch(async error => {
-                logger.error({ logType: 'r1_request', message: 'R1 请求失败:', error: error.message });
-
+                console.error('R1 请求失败:', error.message);
+                
                 // 如果响应已经发送或结束，直接返回
                 if (res.headersSent || res.writableEnded) {
                     throw error;
                 }
 
                 // 切换到 Gemini
-                logger.info({ logType: 'model_switch', message: '切换到 Gemini 模型' });
+                console.log('切换到 Gemini 模型');
                 const geminiCancelToken = axios.CancelToken.source();
-
+                
                 const geminiMessages = [
                     ...messages,
                     ...(searchResults ? [{
                         role: 'system',
                         content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
                     }] : []),
-                    {
-                        role: 'system',
-                        content: '由于前置思考系统暂时无法使用，请直接进行回复。请注意，你可以看到所有的搜索结果和图片内容。'
+                    { 
+                        role: 'system', 
+                        content: '由于前置思考系统暂时无法使用，请直接进行回复。请注意，你可以看到所有的搜索结果和图片内容。' 
                     }
                 ];
 
@@ -591,7 +579,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                     // 直接返回，不继续执行后面的 deepseekResponse.data 相关代码
                     return await callGemini(geminiMessages, res, geminiCancelToken, originalRequest);
                 } catch (geminiError) {
-                    logger.error({ logType: 'gemini_request', message: 'Gemini 也失败了:', error: geminiError.message });
+                    console.error('Gemini 也失败了:', geminiError);
                     if (!res.headersSent && !res.writableEnded) {
                         res.status(503).json({
                             error: 'Service unavailable',
@@ -613,79 +601,73 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 deepseekResponse.data.on('data', (chunk) => {
                     setTimeout(() => {
                         const chunkStr = chunk.toString();
-
+                        
+                        // 修改日志输出方式
                         try {
                             if (chunkStr.trim() === 'data: [DONE]') {
                                 return;
                             }
                             const deepseekData = JSON.parse(chunkStr.replace(/^data: /, ''));
+                            
+                            // 只输出实际的内容变化
+                            const reasoningContent = deepseekData.choices[0]?.delta?.reasoning_content;
+                            if (reasoningContent) {
+                                process.stdout.write(reasoningContent); // 使用 process.stdout.write 实现流式输出
+                            }
 
-                            if (
-                                deepseekData &&
-                                deepseekData.choices &&
-                                Array.isArray(deepseekData.choices) &&
-                                deepseekData.choices.length > 0 && // 确保 choices 不为空
-                                deepseekData.choices[0] &&
-                                deepseekData.choices[0].delta
-                            ) {
-                                const reasoningContent = deepseekData.choices[0].delta.reasoning_content;
-                                if (reasoningContent) {
-                                    process.stdout.write(reasoningContent); // 使用 process.stdout.write 实现流式输出
-                                }
-
-                                // 构造 OpenAI 格式的 SSE 消息
-                                const formattedData = {
-                                    id: deepseekData.id,
-                                    object: 'chat.completion.chunk',
-                                    created: deepseekData.created,
-                                    model: HYBRID_MODEL_NAME,
-                                    choices: deepseekData.choices.map((choice, index) => {
-                                        let deltaContent = choice.delta?.reasoning_content || "";
-                                        return {
-                                            delta: {
-                                                content: deltaContent,
-                                            },
-                                            index: index,
-                                            finish_reason: choice.finish_reason,
-                                        };
-                                    }),
-                                };
-                                if (formattedData.choices[0]?.delta?.content) { // 仅当 delta 中有内容时才发送
-                                    if (!geminiResponseSent && !thinkTagSent) {// 检查 Gemini 响应是否已发送和 thinkTagSent 标志位
-                                        formattedData.choices[0].delta.content = "<think>AiModel辅助思考系统已载入。" + formattedData.choices[0].delta.content;
-                                        thinkTagSent = true; // 设置 thinkTagSent 为 true
+                            // 构造 OpenAI 格式的 SSE 消息
+                            const formattedData = {
+                                id: deepseekData.id,
+                                object: 'chat.completion.chunk',
+                                created: deepseekData.created,
+                                model: HYBRID_MODEL_NAME,
+                                choices: deepseekData.choices.map((choice, index) => {
+                                    let deltaContent = choice.delta.reasoning_content;
+                                    if (!deltaContent) {
+                                        deltaContent = "";
                                     }
-                                    res.write(`data: ${JSON.stringify(formattedData)}\n\n`);
+                                    return {
+                                        delta: {
+                                            content: deltaContent,
+                                        },
+                                        index: index,
+                                        finish_reason: choice.finish_reason,
+                                    };
+                                }),
+                            };
+
+                            if (formattedData.choices[0].delta.content) { // 仅当 delta 中有内容时才发送
+                                if (!geminiResponseSent && !thinkTagSent) { // 检查 Gemini 响应是否已发送和 thinkTagSent 标志位
+                                    formattedData.choices[0].delta.content = "<think>AiModel辅助思考系统已载入。" + formattedData.choices[0].delta.content; // 添加 <think> 标签
+                                    thinkTagSent = true; // 设置 thinkTagSent 为 true
                                 }
-                            } else {
-                                // 记录 unexpected response
-                                logger.warn({ logType: 'r1_response', message: "Unexpected Deepseek R1 response:", data: deepseekData });
+                                res.write(`data: ${JSON.stringify(formattedData)}\n\n`);
                             }
 
                             if (!receivedThinkingEnd) {
-                                const reasoningContent = deepseekData.choices?.[0]?.delta?.reasoning_content || ''; //更安全的访问
+                                const reasoningContent = deepseekData.choices[0]?.delta?.reasoning_content || '';
                                 thinkingContent += reasoningContent;
-
+                                
                                 // 只在 reasoning_content 结束时输出一次完整的思考内容
                                 if (!reasoningContent && thinkingContent !== '') {
-                                    logger.info({ logType: 'r1_thinking', message: '\n\nR1 思考完成，完整内容：\n', content: thinkingContent });
+                                    console.log('\n\nR1 思考完成，完整内容：\n', thinkingContent, '\n');
                                     receivedThinkingEnd = true;
-
+                                    
                                     // 1. 首先取消 R1 的生成请求
                                     try {
                                         // 使用 axios 的 CancelToken 来取消请求
                                         r1CancelToken.cancel('Reasoning content finished');
-                                        logger.info({ logType: 'r1_request', message: '已发送取消请求给 R1 服务器' });
+                                        console.log('已发送取消请求给 R1 服务器');
                                     } catch (cancelError) {
-                                        logger.error({ logType: 'r1_request', message: '取消 R1 请求时出错:', error: cancelError.message });
+                                        console.error('取消 R1 请求时出错:', cancelError);
                                     }
-
+                                    
                                     // 2. 然后关闭数据流
                                     deepseekResponse.data.destroy();
-
+                                    
                                     // 3. 为 Gemini 创建新的 cancelToken
                                     const geminiCancelToken = axios.CancelToken.source();
-
+                                    
                                     // 4. 继续后续的 Gemini 调用
                                     const geminiMessages = [
                                         ...messages,
@@ -693,20 +675,20 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                             role: 'system',
                                             content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
                                         }] : []),
-                                        {
-                                            role: 'assistant',
-                                            content: thinkingContent
+                                        { 
+                                            role: 'assistant', 
+                                            content: thinkingContent 
                                         },
-                                        {
-                                            role: 'user',
-                                            content: RELAY_PROMPT
+                                        { 
+                                            role: 'user', 
+                                            content: RELAY_PROMPT 
                                         }
                                     ];
 
                                     // 在 Gemini 请求发起时添加到活动请求列表
-                                    activeRequests.push({
-                                        modelType: 'Gemini',
-                                        cancelTokenSource: geminiCancelToken
+                                    activeRequests.push({ 
+                                        modelType: 'Gemini', 
+                                        cancelTokenSource: geminiCancelToken 
                                     });
 
                                     axios.post(
@@ -740,9 +722,9 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                             },
                                         }
                                     ).then(geminiResponse => {
-                                        logger.info({ logType: 'gemini_request', message: 'Gemini API call successful - from Deepseek flow' }); // 修改日志
-                                        logger.info({ logType: 'gemini_request', message: 'Gemini API request config:', config: geminiResponse.config }); // 打印请求配置
-                                        logger.info({ logType: 'gemini_request', message: 'Gemini API response data:', data: geminiResponse.data }); // 打印响应数据
+                                        console.log('Gemini API call successful - from Deepseek flow'); // 修改日志
+                                        console.log('Gemini API request config:', geminiResponse.config); // 打印请求配置
+                                        console.log('Gemini API response data:', geminiResponse.data); // 打印响应数据
                                         geminiResponseSent = true; // 标记 Gemini 响应已发送
                                         res.write('data: {"choices": [{"delta": {"content": "\\n辅助思考已结束，以上辅助思考内容用户不可见，请MODEL开始以中文作为主要语言进行正式输出</think>"}, "index": 0, "finish_reason": null}]}\n\n'); // 输出 </think> 标签
                                         geminiResponse.data.on('data', chunk => {
@@ -754,7 +736,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                                         if (line.includes('[DONE]')) {
                                                             continue;
                                                         }
-
+                                                        
                                                         try {
                                                             const data = JSON.parse(line.slice(6));
                                                             const content = data.choices[0]?.delta?.content || '';
@@ -775,23 +757,20 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                                         } catch (parseError) {
                                                             // 忽略 [DONE] 和其他非 JSON 数据的解析错误
                                                             if (!line.includes('[DONE]')) {
-                                                                logger.error({ logType: 'gemini_response', message: 'Error parsing chunk data:', error: parseError.message });
+                                                                console.error('Error parsing chunk data:', parseError);
                                                             }
                                                         }
                                                     }
                                                 }
                                             } catch (error) {
-                                                logger.error({ logType: 'gemini_response', message: 'Error parsing Deepseek R1 chunk:', error: error.message });
-                                                // 可以选择在这里添加额外的错误处理逻辑，例如重试或记录更详细的错误信息
-                                                logger.error({ logType: 'gemini_response', message: 'Chunk causing error:', chunk: chunkStr }); // 打印导致错误的数据块
+                                                console.error('Error processing chunk:', error);
                                             }
                                         });
 
                                         // 修改结束处理
                                         geminiResponse.data.on('end', () => {
-                                            logger.info({ logType: 'gemini_response', message: '\n\nGemini response ended.' }); // 添加换行使输出更清晰
+                                            console.log('\n\nGemini response ended.'); // 添加换行使输出更清晰
                                             res.write('data: [DONE]\n\n');
-                                            
                                             if (!res.writableEnded) {
                                                 res.end();
                                             }
@@ -800,12 +779,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                         });
 
                                         geminiResponse.data.on('error', (error) => {
-                                            logger.error({ 
-                                                logType: 'gemini_response', 
-                                                message: 'Gemini response error:', 
-                                                error: error.message 
-                                            });
-                                            
+                                            console.error('Gemini response error:', error);
                                             if (!res.writableEnded) {
                                                 res.end();
                                             }
@@ -813,10 +787,10 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                             removeActiveRequest('Gemini');
                                         });
                                     }).catch(error => {
-                                        logger.error({ logType: 'gemini_request', message: 'Gemini API call error:', error: error.message });
-                                        logger.error({ logType: 'gemini_request', message: 'Gemini API request config:', config: error.config });
-                                        logger.error({ logType: 'gemini_request', message: 'Gemini API response data:', data: error.response?.data });
-
+                                        console.error('Gemini API call error:', error);
+                                        console.error('Gemini API request config:', error.config);
+                                        console.error('Gemini API response data:', error.response?.data);
+                                        
                                         if (!res.writableEnded) {
                                             let errorMessage = 'Error calling Gemini API';
                                             if (error.code === 'ECONNABORTED') {
@@ -827,7 +801,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                                 res.status(429).send({ error: errorMessage, details: error.response?.data }); // 429 Too Many Requests
                                             } else if (error.config?.__retryCount >= 3) { // 假设重试 3 次后失败
                                                 errorMessage = 'Gemini API request failed after multiple retries.';
-                                                logger.info({ logType: 'gemini_request', message: '返回 503 错误 - callGemini 函数中，Gemini API 多次重试失败' }); // 添加日志
+                                                console.log('返回 503 错误 - callGemini 函数中，Gemini API 多次重试失败'); // 添加日志
                                                 res.status(503).send({ error: errorMessage }); // 503 Service Unavailable
                                             }
                                             else {
@@ -841,13 +815,13 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                 }
                             }
                         } catch (error) {
-                            logger.error({ logType: 'r1_response', message: 'Error parsing Deepseek R1 chunk:', error: error.message });
+                            console.error('Error parsing Deepseek R1 chunk:', error);
                         }
                     }, 600);
                 });
 
                 deepseekResponse.data.on('end', () => {
-                    logger.info({ logType: 'r1_response', message: 'Deepseek response ended. receivedThinkingEnd:', receivedThinkingEnd });
+                    console.log('Deepseek response ended. receivedThinkingEnd:', receivedThinkingEnd);
                     removeActiveRequest('R1');
                     if (!geminiResponseSent && !res.writableEnded) {
                         res.write('data: [DONE]\n\n');
@@ -859,34 +833,34 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 deepseekResponse.data.on('error', async (error) => {
                     // 如果是取消请求导致的错误，只输出简单日志
                     if (axios.isCancel(error)) {
-                        logger.info({ logType: 'r1_request', message: 'R1 请求已取消:', error: error.message });
+                        console.log('R1 请求已取消:', error.message);
                         return;
                     }
 
                     // 其他错误继续原有的处理逻辑
-                    logger.error({ logType: 'r1_request', message: 'Deepseek R1 请求出错:', error: error.message });
-
+                    console.error('Deepseek R1 请求出错:', error);
+                    
                     if (error.code === 'ECONNRESET' || error.code === 'ECONNABORTED') {
                         if (!geminiResponseSent && !res.headersSent && !res.writableEnded) {
                             // 为 Gemini 创建新的 cancelToken
                             const geminiCancelToken = axios.CancelToken.source();
-
+                            
                             const geminiMessages = [
                                 ...messages,
                                 ...(searchResults ? [{
                                     role: 'system',
                                     content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
                                 }] : []),
-                                {
-                                    role: 'system',
-                                    content: '由于前置思考系统连接中断，请直接进行回复。请注意，你可以看到所有的搜索结果和图片内容。'
+                                { 
+                                    role: 'system', 
+                                    content: '由于前置思考系统连接中断，请直接进行回复。请注意，你可以看到所有的搜索结果和图片内容。' 
                                 }
                             ];
 
                             try {
                                 await callGemini(geminiMessages, res, geminiCancelToken, originalRequest);
                             } catch (geminiError) {
-                                logger.error({ logType: 'gemini_request', message: 'Both R1 and Gemini failed:', error: geminiError.message });
+                                console.error('Both R1 and Gemini failed:', geminiError);
                                 if (!res.headersSent && !res.writableEnded) {
                                     res.status(500).json({
                                         error: 'Connection interrupted',
@@ -895,18 +869,18 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                 }
                             }
                         }
-
+                        
                         if (currentTask) {
                             currentTask.cancelTokenSource.cancel('Connection interrupted');
                             currentTask = null;
                         }
-
+                        
                         return;
                     }
                 });
             }
         } catch (error) {
-            logger.error({ logType: 'request_handling', message: '请求处理错误:', error: error.message });
+            console.error('请求处理错误:', error);
             if (!res.headersSent && !res.writableEnded) {
                 res.status(500).json({
                     error: 'Internal server error',
@@ -916,7 +890,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
             currentTask = null;
         }
     } catch (error) {
-        logger.error({ logType: 'request_handling', message: '请求处理错误:', error: error.message });
+        console.error('请求处理错误:', error);
         if (!res.headersSent && !res.writableEnded) {
             res.status(500).json({
                 error: 'Internal server error',
@@ -931,12 +905,12 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
 function callGemini(messages, res, cancelTokenSource, originalRequest) {
     return new Promise((resolve, reject) => {
         let choiceIndex = 0;
-
+        
         const makeRequest = async () => {
             try {
                 // 检查响应是否已经发送
                 if (res.headersSent || res.writableEnded) {
-                    logger.info({ logType: 'gemini_request', message: '响应已经发送，取消 Gemini 请求' });
+                    console.log('响应已经发送，取消 Gemini 请求');
                     return;
                 }
 
@@ -996,14 +970,14 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                     }
                 );
 
-                logger.info({ logType: 'gemini_request', message: 'Gemini 请求成功' });
+                console.log('Gemini 请求成功');
 
                 // 处理响应流
                 geminiResponse.data.on('data', chunk => {
                     try {
                         // 再次检查响应状态
                         if (res.writableEnded) {
-                            logger.info({ logType: 'gemini_response', message: '响应已结束，停止处理数据' });
+                            console.log('响应已结束，停止处理数据');
                             return;
                         }
 
@@ -1011,17 +985,17 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                         for (const line of lines) {
                             if (line.startsWith('data: ')) {
                                 if (line.includes('[DONE]')) continue;
-
+                                
                                 const data = JSON.parse(line.slice(6));
-
+                                
                                 // 处理 function calling 的响应
                                 if (data.choices[0]?.delta?.tool_calls) {
                                     const toolCalls = data.choices[0].delta.tool_calls;
-                                    logger.info({ logType: 'function_calling', message: '收到 function calling 请求:', data: JSON.stringify(toolCalls) });
+                                    console.log('收到 function calling 请求:', JSON.stringify(toolCalls));
                                     // 这里可以添加处理 function calling 的逻辑
                                     continue;
                                 }
-
+                                
                                 const content = data.choices[0]?.delta?.content || '';
                                 if (content) {
                                     const formattedChunk = {
@@ -1040,7 +1014,7 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                             }
                         }
                     } catch (error) {
-                        logger.error({ logType: 'gemini_response', message: '处理数据块时出错:', error: error.message });
+                        console.error('处理数据块时出错:', error);
                     }
                 });
 
@@ -1053,12 +1027,12 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                 });
 
                 geminiResponse.data.on('error', error => {
-                    logger.error({ logType: 'gemini_response', message: 'Gemini 流错误:', error: error.message });
+                    console.error('Gemini 流错误:', error);
                     reject(error);
                 });
 
             } catch (error) {
-                logger.error({ logType: 'gemini_request', message: 'Gemini 请求错误:', error: error.message });
+                console.error('Gemini 请求错误:', error);
                 reject(error);
             }
         };
@@ -1077,8 +1051,8 @@ async function processImage(imageMessage) {
             url: imageMessage.image_url.url.substring(0, 20) + '...[base64]...'
         } : imageMessage.image_url
     };
-    logger.info({ logType: 'image_processing', message: '开始处理图片:', data: JSON.stringify(logSafeImageMessage, null, 2) });
-
+    console.log('开始处理图片:', JSON.stringify(logSafeImageMessage, null, 2));
+    
     try {
         const requestBody = {
             model: Image_MODEL,
@@ -1090,13 +1064,13 @@ async function processImage(imageMessage) {
             temperature: Image_Model_TEMPERATURE,
             stream: false,
         };
-
+        
         // 创建用于日志的安全版本
         const logSafeRequestBody = {
             ...requestBody,
             messages: requestBody.messages.map(msg => ({
                 ...msg,
-                content: Array.isArray(msg.content)
+                content: Array.isArray(msg.content) 
                     ? msg.content.map(item => {
                         if (item.type === 'image_url' && item.image_url?.url) {
                             return {
@@ -1112,9 +1086,9 @@ async function processImage(imageMessage) {
                     : msg.content
             }))
         };
-
-        logger.info({ logType: 'image_processing', message: '发送给图像识别模型的请求:', data: JSON.stringify(logSafeRequestBody, null, 2) });
-
+        
+        console.log('发送给图像识别模型的请求:', JSON.stringify(logSafeRequestBody, null, 2));
+        
         const response = await axios.post(
             `${process.env.PROXY_URL3}/v1/chat/completions`,
             requestBody,  // 使用原始数据发送请求
@@ -1125,38 +1099,36 @@ async function processImage(imageMessage) {
                 },
             }
         );
-
-        logger.info({ logType: 'image_processing', message: '图像识别模型响应:', data: JSON.stringify(response.data, null, 2) });
-
+        
+        console.log('图像识别模型响应:', JSON.stringify(response.data, null, 2));
+        
         const content = response.data.choices[0].message.content;
-        logger.info({ logType: 'image_processing', message: '图片描述结果:', data: content });
+        console.log('图片描述结果:', content);
         return content;
     } catch (error) {
-        logger.error({ logType: 'image_processing', message: '图片处理错误:', error: error.message });
-        logger.error({
-            logType: 'image_processing', message: '错误详情:', data: {
-                message: error.message,
-                response: error.response?.data,
-                config: {
-                    ...error.config,
-                    data: error.config?.data ? JSON.parse(error.config.data).messages.map(msg => ({
-                        ...msg,
-                        content: Array.isArray(msg.content)
-                            ? msg.content.map(item => {
-                                if (item.type === 'image_url' && item.image_url?.url) {
-                                    return {
-                                        ...item,
-                                        image_url: {
-                                            ...item.image_url,
-                                            url: item.image_url.url.substring(0, 20) + '...[base64]...'
-                                        }
-                                    };
-                                }
-                                return item;
-                            })
-                            : msg.content
-                    })) : error.config?.data
-                }
+        console.error('图片处理错误:', error);
+        console.error('错误详情:', {
+            message: error.message,
+            response: error.response?.data,
+            config: {
+                ...error.config,
+                data: error.config?.data ? JSON.parse(error.config.data).messages.map(msg => ({
+                    ...msg,
+                    content: Array.isArray(msg.content) 
+                        ? msg.content.map(item => {
+                            if (item.type === 'image_url' && item.image_url?.url) {
+                                return {
+                                    ...item,
+                                    image_url: {
+                                        ...item.image_url,
+                                        url: item.image_url.url.substring(0, 20) + '...[base64]...'
+                                    }
+                                };
+                            }
+                            return item;
+                        })
+                        : msg.content
+                })) : error.config?.data
             }
         });
         throw error;
@@ -1169,11 +1141,11 @@ function hasNewImages(messages) {
         ...msg,
         content: sanitizeContent(msg.content)
     }));
-    logger.info({ logType: 'image_check', message: '检查新图片 - 完整消息:', data: JSON.stringify(logSafeMessages, null, 2) });
+    console.log('检查新图片 - 完整消息:', JSON.stringify(logSafeMessages, null, 2));
     const lastMessage = messages[messages.length - 1];
-    const hasImages = lastMessage && Array.isArray(lastMessage.content) &&
-        lastMessage.content.some(item => item.type === 'image_url');
-    logger.info({ logType: 'image_check', message: '是否包含新图片:', data: hasImages }); // 添加日志
+    const hasImages = lastMessage && Array.isArray(lastMessage.content) && 
+                     lastMessage.content.some(item => item.type === 'image_url');
+    console.log('是否包含新图片:', hasImages); // 添加日志
     return hasImages;
 }
 
@@ -1184,9 +1156,9 @@ function extractLastImages(messages) {
         ...lastMessage,
         content: sanitizeContent(lastMessage.content)
     };
-    logger.info({ logType: 'image_extraction', message: '提取图片 - 最后一条消息:', data: JSON.stringify(logSafeMessage, null, 2) });
+    console.log('提取图片 - 最后一条消息:', JSON.stringify(logSafeMessage, null, 2));
     if (!lastMessage || !Array.isArray(lastMessage.content)) {
-        logger.info({ logType: 'image_extraction', message: '没有找到图片消息' });
+        console.log('没有找到图片消息');
         return [];
     }
     const images = lastMessage.content.filter(item => item.type === 'image_url');
@@ -1198,13 +1170,13 @@ function extractLastImages(messages) {
             url: img.image_url.url.substring(0, 20) + '...[base64]...'
         } : img.image_url
     }));
-    logger.info({ logType: 'image_extraction', message: '提取到的图片:', data: JSON.stringify(logSafeImages, null, 2) });
+    console.log('提取到的图片:', JSON.stringify(logSafeImages, null, 2));
     return images;
 }
 
 // 添加判断是否需要联网搜索的函数
 async function determineIfSearchNeeded(messages) {
-    logger.info({ logType: 'web_search_check', message: '开始判断是否需要联网搜索' });
+    console.log('开始判断是否需要联网搜索');
     try {
         const response = await axios.post(
             `${process.env.PROXY_URL4}/v1/chat/completions`,
@@ -1227,17 +1199,17 @@ async function determineIfSearchNeeded(messages) {
         );
 
         const decision = response.data.choices[0].message.content.trim().toLowerCase();
-        logger.info({ logType: 'web_search_check', message: '联网判断结果:', data: decision });
+        console.log('联网判断结果:', decision);
         return decision === 'yes';
     } catch (error) {
-        logger.error({ logType: 'web_search_check', message: '联网判断出错:', error: error.message });
+        console.error('联网判断出错:', error);
         return false;
     }
 }
 
 // 修改执行联网搜索的函数
 async function performWebSearch(messages) {
-    logger.info({ logType: 'web_search', message: '开始执行联网搜索' });
+    console.log('开始执行联网搜索');
     try {
         // 第一步：获取搜索关键词
         const searchTermsResponse = await axios.post(
@@ -1245,8 +1217,11 @@ async function performWebSearch(messages) {
             {
                 model: GoogleSearch_MODEL,
                 messages: [
-                    { role: "system", content: GoogleSearch_PROMPT },
-                    ...messages  // 使用已经包含URL内容的消息
+                    { 
+                        role: "user", 
+                        content: "你是一个搜索关键词生成器。请根据对话内容，生成多个相关的搜索关键词。每行一个关键词。不要有任何解释或其他文字，不要回复搜索词以外的任何内容。同时生成中英文关键词以获得更全面的结果。" 
+                    },
+                    ...messages
                 ],
                 max_tokens: GoogleSearch_Model_MAX_TOKENS,
                 temperature: GoogleSearch_Model_TEMPERATURE,
@@ -1261,7 +1236,7 @@ async function performWebSearch(messages) {
         );
 
         const searchTerms = searchTermsResponse.data.choices[0].message.content;
-        logger.info({ logType: 'web_search', message: '搜索关键词:', data: searchTerms });
+        console.log('搜索关键词:', searchTerms);
 
         // 第二步：执行实际的搜索
         const searchResponse = await axios.post(
@@ -1308,16 +1283,14 @@ async function performWebSearch(messages) {
         );
 
         const searchResults = searchResponse.data.choices[0].message.content;
-        logger.info({ logType: 'web_search', message: '搜索结果:', data: searchResults });
+        console.log('搜索结果:', searchResults);
         return searchResults;
     } catch (error) {
-        logger.error({ logType: 'web_search', message: '联网搜索出错:', error: error.message });
-        logger.error({
-            logType: 'web_search', message: '错误详情:', data: {
-                message: error.message,
-                response: error.response?.data,
-                config: error.config
-            }
+        console.error('联网搜索出错:', error);
+        console.error('错误详情:', {
+            message: error.message,
+            response: error.response?.data,
+            config: error.config
         });
         return null;
     }
@@ -1326,21 +1299,21 @@ async function performWebSearch(messages) {
 // 添加正确的 removeActiveRequest 函数
 function removeActiveRequest(modelType) {
     activeRequests = activeRequests.filter(req => req.modelType !== modelType);
-    logger.info({ logType: 'task_management', message: `${modelType} 请求已完成，从活动请求列表中移除` });
+    console.log(`${modelType} 请求已完成，从活动请求列表中移除`);
 }
 
 // 修改文件解析函数中的 CSV 部分
 async function parseFile(fileType, fileContent) {
     try {
-        switch (fileType.toLowerCase()) {
+        switch(fileType.toLowerCase()) {
             case 'application/pdf':
                 const pdfData = await pdfParse(fileContent);
                 return pdfData.text;
-
+                
             case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-                const result = await mammoth.extractRawText({ buffer: fileContent });
+                const result = await mammoth.extractRawText({buffer: fileContent});
                 return result.value;
-
+                
             case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
             case 'application/vnd.ms-excel':
                 // Excel 文件解析
@@ -1352,9 +1325,9 @@ async function parseFile(fileType, fileContent) {
                     cellNF: true,
                     cellText: true
                 });
-
+                
                 let excelContent = [];
-
+                
                 // 遍历所有工作表
                 workbook.SheetNames.forEach(sheetName => {
                     const sheet = workbook.Sheets[sheetName];
@@ -1365,20 +1338,20 @@ async function parseFile(fileType, fileContent) {
                         dateNF: 'yyyy-mm-dd', // 日期格式
                         defval: '', // 空单元格的默认值
                     });
-
+                    
                     if (sheetData.length > 0) {
                         excelContent.push(`\n工作表：${sheetName}`);
-
+                        
                         // 处理表头
                         if (sheetData[0]) {
-                            const headers = sheetData[0].map(header =>
+                            const headers = sheetData[0].map(header => 
                                 header ? header.toString().trim() : ''
                             ).filter(Boolean);
                             if (headers.length > 0) {
                                 excelContent.push(`表头：${headers.join(' | ')}`);
                             }
                         }
-
+                        
                         // 处理数据行
                         sheetData.slice(1).forEach(row => {
                             if (row && row.some(cell => cell !== undefined && cell !== '')) {
@@ -1394,15 +1367,15 @@ async function parseFile(fileType, fileContent) {
                         });
                     }
                 });
-
+                
                 return excelContent.join('\n');
-
+                
             case 'text/csv':
-                logger.info({ logType: 'file_parsing', message: '开始解析 CSV 文件' });
-
+                console.log('开始解析 CSV 文件');
+                
                 // 直接使用 GBK 解码
                 const decodedContent = iconv.decode(fileContent, 'gbk');
-                logger.info({ logType: 'file_parsing', message: '文件解码完成，开始解析 CSV' });
+                console.log('文件解码完成，开始解析 CSV');
 
                 try {
                     const records = parse(decodedContent, {
@@ -1420,7 +1393,7 @@ async function parseFile(fileType, fileContent) {
                     const headers = records[0]
                         .map(header => header.trim())
                         .filter(Boolean);
-                    logger.info({ logType: 'file_parsing', message: '检测到的表头:', headers });
+                    console.log('检测到的表头:', headers);
 
                     // 格式化输出
                     const formattedRecords = [];
@@ -1446,20 +1419,19 @@ async function parseFile(fileType, fileContent) {
                     return formattedRecords.join('\n');
 
                 } catch (error) {
-                    logger.error({ logType: 'file_parsing', message: 'CSV 解析错误:', error: error.message });
+                    console.error('CSV 解析错误:', error);
                     throw error;
                 }
-
+                
             default:
                 throw new Error(`不支持的文件类型: ${fileType}`);
         }
     } catch (error) {
-        logger.error({ logType: 'file_parsing', message: '文件解析错误:', error: error.message });
+        console.error('文件解析错误:', error);
         throw error;
     }
 }
 
 app.listen(PROXY_PORT, () => {
-    logger.info({ logType: 'system', message: `Hybrid AI proxy server started on port ${PROXY_PORT}` });
+    console.log(`Hybrid AI proxy server started on port ${PROXY_PORT}`);
 });
-
