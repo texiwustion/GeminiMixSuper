@@ -713,6 +713,7 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                         cancelTokenSource: geminiCancelToken 
                                     });
 
+                                    // 修改为非流式请求
                                     axios.post(
                                         `${process.env.PROXY_URL2}/v1/chat/completions`,
                                         {
@@ -720,14 +721,13 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                             messages: geminiMessages,
                                             max_tokens: Model_output_MAX_TOKENS,
                                             temperature: Model_output_TEMPERATURE,
-                                            stream: true,
+                                            stream: false, // 改为非流式
                                         },
                                         {
                                             headers: {
                                                 Authorization: `Bearer ${Model_output_API_KEY}`,
                                                 'Content-Type': 'application/json',
                                             },
-                                            responseType: 'stream',
                                             cancelToken: geminiCancelToken.token,
                                             timeout: 30000,
                                             'axios-retry': {
@@ -747,65 +747,32 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                                         console.log('Gemini 模型开始输出');
                                         geminiResponseSent = true;
                                         res.write('data: {"choices": [{"delta": {"content": "\\n辅助思考已结束，以上辅助思考内容用户不可见，请MODEL开始以中文作为主要语言进行正式输出</think>"}, "index": 0, "finish_reason": null}]}\n\n'); // 输出 </think> 标签
-                                        geminiResponse.data.on('data', chunk => {
-                                            try {
-                                                const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
-                                                for (const line of lines) {
-                                                    if (line.startsWith('data: ')) {
-                                                        // 检查是否是 [DONE] 信号
-                                                        if (line.includes('[DONE]')) {
-                                                            continue;
-                                                        }
-                                                        
-                                                        try {
-                                                            const data = JSON.parse(line.slice(6));
-                                                            const content = data.choices[0]?.delta?.content || '';
-                                                            if (content) {
-                                                                const formattedChunk = {
-                                                                    id: `chatcmpl-${Date.now()}`,
-                                                                    object: 'chat.completion.chunk',
-                                                                    created: Math.floor(Date.now() / 1000),
-                                                                    model: HYBRID_MODEL_NAME,
-                                                                    choices: [{
-                                                                        delta: { content },
-                                                                        index: choiceIndex++,
-                                                                        finish_reason: null
-                                                                    }]
-                                                                };
-                                                                res.write(`data: ${JSON.stringify(formattedChunk)}\n\n`);
-                                                            }
-                                                        } catch (parseError) {
-                                                            // 忽略 [DONE] 和其他非 JSON 数据的解析错误
-                                                            if (!line.includes('[DONE]')) {
-                                                                console.error('Error parsing chunk data:', parseError);
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            } catch (error) {
-                                                console.error('Error processing chunk:', error);
-                                            }
-                                        });
-
-                                        // 修改结束处理
-                                        geminiResponse.data.on('end', () => {
-                                            console.log('\n\nGemini response ended.'); // 添加换行使输出更清晰
-                                            res.write('data: [DONE]\n\n');
-                                            if (!res.writableEnded) {
-                                                res.end();
-                                            }
-                                            currentTask = null;
-                                            removeActiveRequest('Gemini');
-                                        });
-
-                                        geminiResponse.data.on('error', (error) => {
-                                            console.error('Gemini 模型调用失败');
-                                            if (!res.writableEnded) {
-                                                res.end();
-                                            }
-                                            currentTask = null;
-                                            removeActiveRequest('Gemini');
-                                        });
+                                        
+                                        // 获取完整的响应内容
+                                        const content = geminiResponse.data.choices[0].message.content;
+                                        
+                                        // 将完整内容作为一个块发送
+                                        const formattedChunk = {
+                                            id: `chatcmpl-${Date.now()}`,
+                                            object: 'chat.completion.chunk',
+                                            created: Math.floor(Date.now() / 1000),
+                                            model: HYBRID_MODEL_NAME,
+                                            choices: [{
+                                                delta: { content },
+                                                index: choiceIndex++,
+                                                finish_reason: null
+                                            }]
+                                        };
+                                        res.write(`data: ${JSON.stringify(formattedChunk)}\n\n`);
+                                        
+                                        // 发送完成信号
+                                        console.log('\n\nGemini response completed.'); 
+                                        res.write('data: [DONE]\n\n');
+                                        if (!res.writableEnded) {
+                                            res.end();
+                                        }
+                                        currentTask = null;
+                                        removeActiveRequest('Gemini');
                                     }).catch(error => {
                                         console.error('Gemini 模型调用失败');
                                         console.error('Gemini 请求重试失败，返回 503 错误');
@@ -933,7 +900,7 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                     messages: messages,  // 直接使用原始消息，不做过滤
                     max_tokens: Model_output_MAX_TOKENS,
                     temperature: Model_output_TEMPERATURE,
-                    stream: true,
+                    stream: false,  // 改为非流式
                 };
 
                 // 如果启用了 WebSearch，添加 function calling 配置
@@ -965,7 +932,6 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                             Authorization: `Bearer ${Model_output_API_KEY}`,
                             'Content-Type': 'application/json',
                         },
-                        responseType: 'stream',
                         cancelToken: cancelTokenSource.token,
                         timeout: 30000,
                         'axios-retry': {
@@ -985,64 +951,35 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
 
                 console.log('Gemini 请求成功');
 
-                // 处理响应流
-                geminiResponse.data.on('data', chunk => {
-                    try {
-                        // 再次检查响应状态
-                        if (res.writableEnded) {
-                            console.log('响应已结束，停止处理数据');
-                            return;
-                        }
+                // 再次检查响应状态
+                if (res.writableEnded) {
+                    console.log('响应已结束，停止处理数据');
+                    return;
+                }
 
-                        const lines = chunk.toString().split('\n').filter(line => line.trim() !== '');
-                        for (const line of lines) {
-                            if (line.startsWith('data: ')) {
-                                if (line.includes('[DONE]')) continue;
-                                
-                                const data = JSON.parse(line.slice(6));
-                                
-                                // 处理 function calling 的响应
-                                if (data.choices[0]?.delta?.tool_calls) {
-                                    const toolCalls = data.choices[0].delta.tool_calls;
-                                    console.log('收到 function calling 请求:', JSON.stringify(toolCalls));
-                                    // 这里可以添加处理 function calling 的逻辑
-                                    continue;
-                                }
-                                
-                                const content = data.choices[0]?.delta?.content || '';
-                                if (content) {
-                                    const formattedChunk = {
-                                        id: `chatcmpl-${Date.now()}`,
-                                        object: 'chat.completion.chunk',
-                                        created: Math.floor(Date.now() / 1000),
-                                        model: HYBRID_MODEL_NAME,
-                                        choices: [{
-                                            delta: { content },
-                                            index: choiceIndex++,
-                                            finish_reason: null
-                                        }]
-                                    };
-                                    res.write(`data: ${JSON.stringify(formattedChunk)}\n\n`);
-                                }
-                            }
-                        }
-                    } catch (error) {
-                        console.error('处理数据块时出错:', error);
-                    }
-                });
-
-                geminiResponse.data.on('end', () => {
-                    if (!res.writableEnded) {
-                        res.write('data: [DONE]\n\n');
-                        res.end();
-                    }
-                    resolve();
-                });
-
-                geminiResponse.data.on('error', error => {
-                    console.error('Gemini 流错误:', error);
-                    reject(error);
-                });
+                // 处理非流式响应
+                const content = geminiResponse.data.choices[0].message.content;
+                
+                // 将完整内容作为一个块发送
+                const formattedChunk = {
+                    id: `chatcmpl-${Date.now()}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: HYBRID_MODEL_NAME,
+                    choices: [{
+                        delta: { content },
+                        index: choiceIndex++,
+                        finish_reason: null
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(formattedChunk)}\n\n`);
+                
+                // 发送完成信号
+                if (!res.writableEnded) {
+                    res.write('data: [DONE]\n\n');
+                    res.end();
+                }
+                resolve();
 
             } catch (error) {
                 console.error('Gemini 请求错误:', error);
