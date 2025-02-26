@@ -890,10 +890,22 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
 // 修改 callGemini 函数
 function callGemini(messages, res, cancelTokenSource, originalRequest) {
     return new Promise((resolve, reject) => {
-        let choiceIndex = 0;
-        
         const makeRequest = async () => {
             try {
+                // 模拟流式输出的结束信号
+                const endThinkingChunk = {
+                    id: `chatcmpl-${Date.now()}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: HYBRID_MODEL_NAME,
+                    choices: [{
+                        delta: {},  // 空的 delta 表示流的结束
+                        index: 0,
+                        finish_reason: "stop"  // 明确指定结束原因
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(endThinkingChunk)}\n\n`);
+                
                 // 保持原始消息格式，包括图片数据
                 const requestConfig = {
                     model: Model_output_MODEL,
@@ -957,22 +969,50 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                     return;
                 }
 
+                // 开始新的消息流
+                const startChunk = {
+                    id: `chatcmpl-${Date.now()}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: HYBRID_MODEL_NAME,
+                    choices: [{
+                        delta: { role: "assistant" },  // 开始新的助手角色消息
+                        index: 0,
+                        finish_reason: null
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(startChunk)}\n\n`);
+                
                 // 处理非流式响应
                 const content = geminiResponse.data.choices[0].message.content;
                 
                 // 将完整内容作为一个块发送
-                const formattedChunk = {
+                const contentChunk = {
                     id: `chatcmpl-${Date.now()}`,
                     object: 'chat.completion.chunk',
                     created: Math.floor(Date.now() / 1000),
                     model: HYBRID_MODEL_NAME,
                     choices: [{
                         delta: { content },
-                        index: choiceIndex++,
+                        index: 0,
                         finish_reason: null
                     }]
                 };
-                res.write(`data: ${JSON.stringify(formattedChunk)}\n\n`);
+                res.write(`data: ${JSON.stringify(contentChunk)}\n\n`);
+                
+                // 发送完成信号
+                const finishChunk = {
+                    id: `chatcmpl-${Date.now()}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: HYBRID_MODEL_NAME,
+                    choices: [{
+                        delta: {},  // 空的 delta 表示流的结束
+                        index: 0,
+                        finish_reason: "stop"
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(finishChunk)}\n\n`);
                 
                 // 发送完成信号
                 if (!res.writableEnded) {
