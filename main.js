@@ -20,11 +20,11 @@ app.use(express.json({ limit: '20mb' }));
 const PROXY_URL = process.env.PROXY_URL;
 const PROXY_PORT = Number(process.env.PROXY_PORT);
 
-const DEEPSEEK_R1_API_KEY = process.env.DEEPSEEK_R1_API_KEY;
-const DEEPSEEK_R1_MODEL = process.env.DEEPSEEK_R1_MODEL;
-const DEEPSEEK_R1_MAX_TOKENS = Number(process.env.DEEPSEEK_R1_MAX_TOKENS);
-const DEEPSEEK_R1_CONTEXT_WINDOW = Number(process.env.DEEPSEEK_R1_CONTEXT_WINDOW);
-const DEEPSEEK_R1_TEMPERATURE = Number(process.env.DEEPSEEK_R1_TEMPERATURE);
+const DEEPSEEK_R1_API_KEY = process.env.GROK_API_KEY;
+const DEEPSEEK_R1_MODEL = process.env.GROK_MODEL;
+const DEEPSEEK_R1_MAX_TOKENS = Number(process.env.GROK_MAX_TOKENS);
+const DEEPSEEK_R1_CONTEXT_WINDOW = Number(process.env.GROK_CONTEXT_WINDOW);
+const DEEPSEEK_R1_TEMPERATURE = Number(process.env.GROK_TEMPERATURE);
 
 const Model_output_API_KEY = process.env.Model_output_API_KEY;
 const Model_output_MODEL = process.env.Model_output_MODEL;
@@ -502,9 +502,9 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
             // 等待所有预处理任务完成
             await Promise.all([searchTask]);
 
-            // 在发送给 R1 之前过滤掉图片数据
-            let messagesForR1 = [...messages];
-            messagesForR1 = messagesForR1.map(message => {
+            // 在发送给 Grok 之前过滤掉图片数据
+            let messagesForGrok = [...messages];
+            messagesForGrok = messagesForGrok.map(message => {
                 if (Array.isArray(message.content)) {
                     // 只保留文本内容
                     const textContents = message.content
@@ -518,9 +518,9 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 return message;
             });
 
-            // 准备发送给 R1 的消息
-            messagesForR1 = [
-                ...messagesForR1,  // 使用过滤后的消息
+            // 准备发送给 Grok 的消息
+            messagesForGrok = [
+                ...messagesForGrok,  // 使用过滤后的消息
                 ...(searchResults ? [{
                     role: 'system',
                     content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
@@ -535,45 +535,193 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 }
             ];
 
-            // R1 请求使用过滤后的消息
-            const r1CancelToken = axios.CancelToken.source();
+            // 向客户端发送思考开始的标记
+            const thinkStartChunk = {
+                id: `chatcmpl-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: HYBRID_MODEL_NAME,
+                choices: [{
+                    delta: { content: "<think>AiModel辅助思考系统已载入。正在思考中..." },
+                    index: 0,
+                    finish_reason: null
+                }]
+            };
+            res.write(`data: ${JSON.stringify(thinkStartChunk)}\n\n`);
+
+            // Grok 请求使用非流式输出
+            const grokCancelToken = axios.CancelToken.source();
             activeRequests.push({ 
-                modelType: 'R1', 
-                cancelTokenSource: r1CancelToken 
+                modelType: 'Grok', 
+                cancelTokenSource: grokCancelToken 
             });
 
-            const deepseekResponse = await axios.post(
-                `${PROXY_URL}/v1/chat/completions`,
-                {
-                    model: DEEPSEEK_R1_MODEL,
-                    messages: messagesForR1,  // 使用过滤后的消息
-                    max_tokens: DEEPSEEK_R1_MAX_TOKENS,
-                    temperature: DEEPSEEK_R1_TEMPERATURE,
-                    stream: true,
-                },
-                {
-                    headers: {
-                        Authorization: `Bearer ${DEEPSEEK_R1_API_KEY}`,
-                        'Content-Type': 'application/json',
+            try {
+                console.log('开始向 Grok 发送非流式请求...');
+                const grokResponse = await axios.post(
+                    `${PROXY_URL}/v1/chat/completions`,
+                    {
+                        model: DEEPSEEK_R1_MODEL,
+                        messages: messagesForGrok,
+                        max_tokens: DEEPSEEK_R1_MAX_TOKENS,
+                        temperature: DEEPSEEK_R1_TEMPERATURE,
+                        stream: false, // 非流式请求
                     },
-                    responseType: 'stream',
-                    cancelToken: r1CancelToken.token,
-                    timeout: 30000,
-                    'axios-retry': {
-                        retries: 3,
-                        retryDelay: (retryCount) => retryCount * 1000,
-                        retryCondition: (error) => {
-                            return (
-                                axios.isNetworkError(error) ||
-                                error.code === 'ECONNABORTED' ||
-                                error.response?.status === 429 ||
-                                error.response?.status >= 500
-                            );
+                    {
+                        headers: {
+                            Authorization: `Bearer ${DEEPSEEK_R1_API_KEY}`,
+                            'Content-Type': 'application/json',
+                        },
+                        cancelToken: grokCancelToken.token,
+                        timeout: 360000, // 增加超时时间
+                        'axios-retry': {
+                            retries: 3,
+                            retryDelay: (retryCount) => retryCount * 1000,
+                            retryCondition: (error) => {
+                                return (
+                                    axios.isNetworkError(error) ||
+                                    error.code === 'ECONNABORTED' ||
+                                    error.response?.status === 429 ||
+                                    error.response?.status >= 500
+                                );
+                            }
                         }
                     }
+                );
+
+                console.log('Grok 思考完成，处理思考内容');
+                
+                // 获取完整的思考内容
+                let thinkingContent = grokResponse.data.choices[0].message.content;
+                
+                // 清理思考内容，去掉 > 符号和可能包含的"回答："部分
+                thinkingContent = thinkingContent.replace(/\n>/g, '\n');
+                
+                // 检查思考内容是否包含"回答："，如果有则截断
+                const answerIndex = thinkingContent.indexOf('回答：');
+                if (answerIndex !== -1) {
+                    thinkingContent = thinkingContent.substring(0, answerIndex);
                 }
-            ).catch(async error => {
-                console.error('R1 请求失败:', error.message);
+                
+                console.log('Grok 思考内容（已清理）:', thinkingContent);
+                
+                // 向客户端发送思考内容
+                const thinkContentChunk = {
+                    id: `chatcmpl-${Date.now()}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: HYBRID_MODEL_NAME,
+                    choices: [{
+                        delta: { content: thinkingContent },
+                        index: 0,
+                        finish_reason: null
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(thinkContentChunk)}\n\n`);
+                
+                // 向客户端发送思考结束的标记
+                const thinkEndChunk = {
+                    id: `chatcmpl-${Date.now()}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: HYBRID_MODEL_NAME,
+                    choices: [{
+                        delta: { content: "\n\n</think>" },  // 使用明确的结束标记
+                        index: 0,
+                        finish_reason: null
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(thinkEndChunk)}\n\n`);
+                
+                // 为 Gemini 创建新的 cancelToken
+                const geminiCancelToken = axios.CancelToken.source();
+                
+                // 继续后续的 Gemini 调用，使用清理后的思考内容
+                const geminiMessages = [
+                    ...messages,
+                    ...(searchResults ? [{
+                        role: 'system',
+                        content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
+                    }] : []),
+                    { 
+                        role: 'assistant', 
+                        content: thinkingContent 
+                    },
+                    { 
+                        role: 'user', 
+                        content: RELAY_PROMPT 
+                    }
+                ];
+
+                // 在 Gemini 请求发起时添加到活动请求列表
+                activeRequests.push({ 
+                    modelType: 'Gemini', 
+                    cancelTokenSource: geminiCancelToken 
+                });
+
+                // 发送 Gemini 请求
+                console.log('开始向 Gemini 发送请求...');
+                const geminiResponse = await axios.post(
+                    `${process.env.PROXY_URL2}/v1/chat/completions`,
+                    {
+                        model: Model_output_MODEL,
+                        messages: geminiMessages,
+                        max_tokens: Model_output_MAX_TOKENS,
+                        temperature: Model_output_TEMPERATURE,
+                        stream: false, // 非流式请求
+                    },
+                    {
+                        headers: {
+                            Authorization: `Bearer ${Model_output_API_KEY}`,
+                            'Content-Type': 'application/json',
+                        },
+                        cancelToken: geminiCancelToken.token,
+                        timeout: 30000,
+                        'axios-retry': {
+                            retries: 3,
+                            retryDelay: (retryCount) => retryCount * 1000,
+                            retryCondition: (error) => {
+                                return (
+                                    axios.isNetworkError(error) ||
+                                    error.code === 'ECONNABORTED' ||
+                                    error.response?.status === 429 ||
+                                    error.response?.status >= 500
+                                );
+                            }
+                        }
+                    }
+                );
+
+                console.log('Gemini 响应成功，发送内容到客户端');
+                
+                // 获取 Gemini 的完整响应
+                const geminiContent = geminiResponse.data.choices[0].message.content;
+                
+                // 发送 Gemini 的响应内容
+                const contentChunk = {
+                    id: `chatcmpl-${Date.now()}`,
+                    object: 'chat.completion.chunk',
+                    created: Math.floor(Date.now() / 1000),
+                    model: HYBRID_MODEL_NAME,
+                    choices: [{
+                        delta: { content: geminiContent },
+                        index: 0,
+                        finish_reason: null
+                    }]
+                };
+                res.write(`data: ${JSON.stringify(contentChunk)}\n\n`);
+                
+                // 发送完成信号
+                res.write('data: [DONE]\n\n');
+                res.end();
+                
+                // 清理资源
+                removeActiveRequest('Grok');
+                removeActiveRequest('Gemini');
+                currentTask = null;
+                
+            } catch (error) {
+                console.error('Grok 请求失败:', error.message);
                 
                 // 如果响应已经发送或结束，直接返回
                 if (res.headersSent || res.writableEnded) {
@@ -598,8 +746,8 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                 ];
 
                 try {
-                    // 直接返回，不继续执行后面的 deepseekResponse.data 相关代码
-                    return await callGemini(geminiMessages, res, geminiCancelToken, originalRequest);
+                    // 直接返回，不继续执行后面的代码
+                    await callGemini(geminiMessages, res, geminiCancelToken, originalRequest);
                 } catch (geminiError) {
                     console.error('Gemini 也失败了:', geminiError);
                     if (!res.headersSent && !res.writableEnded) {
@@ -610,261 +758,8 @@ app.post('/v1/chat/completions', apiKeyAuth, async (req, res) => {
                     }
                     throw geminiError;
                 }
-            });
-
-            // 只有在 R1 请求成功时才执行这部分代码
-            if (deepseekResponse) {
-                let thinkingContent = '';
-                let receivedThinkingEnd = false;
-                let choiceIndex = 0;
-                let geminiResponseSent = false;
-                let thinkTagSent = false;
-
-                deepseekResponse.data.on('data', (chunk) => {
-                    setTimeout(() => {
-                        const chunkStr = chunk.toString();
-                        
-                        // 修改日志输出方式
-                        try {
-                            if (chunkStr.trim() === 'data: [DONE]') {
-                                return;
-                            }
-                            const deepseekData = JSON.parse(chunkStr.replace(/^data: /, ''));
-                            
-                            // 只输出实际的内容变化
-                            const reasoningContent = deepseekData.choices[0]?.delta?.reasoning_content;
-                            if (reasoningContent) {
-                                process.stdout.write(reasoningContent); // 使用 process.stdout.write 实现流式输出
-                            }
-
-                            // 构造 OpenAI 格式的 SSE 消息
-                            const formattedData = {
-                                id: deepseekData.id,
-                                object: 'chat.completion.chunk',
-                                created: deepseekData.created,
-                                model: HYBRID_MODEL_NAME,
-                                choices: deepseekData.choices.map((choice, index) => {
-                                    let deltaContent = choice.delta.reasoning_content;
-                                    if (!deltaContent) {
-                                        deltaContent = "";
-                                    }
-                                    return {
-                                        delta: {
-                                            content: deltaContent,
-                                        },
-                                        index: index,
-                                        finish_reason: choice.finish_reason,
-                                    };
-                                }),
-                            };
-
-                            if (formattedData.choices[0].delta.content) { // 仅当 delta 中有内容时才发送
-                                if (!geminiResponseSent && !thinkTagSent) { // 检查 Gemini 响应是否已发送和 thinkTagSent 标志位
-                                    formattedData.choices[0].delta.content = "<think>AiModel辅助思考系统已载入。" + formattedData.choices[0].delta.content; // 添加 <think> 标签
-                                    thinkTagSent = true; // 设置 thinkTagSent 为 true
-                                }
-                                res.write(`data: ${JSON.stringify(formattedData)}\n\n`);
-                            }
-
-                            if (!receivedThinkingEnd) {
-                                const reasoningContent = deepseekData.choices[0]?.delta?.reasoning_content || '';
-                                thinkingContent += reasoningContent;
-                                
-                                // 只在 reasoning_content 结束时输出一次完整的思考内容
-                                if (!reasoningContent && thinkingContent !== '') {
-                                    console.log('\n\nR1 思考完成，完整内容：\n', thinkingContent, '\n');
-                                    receivedThinkingEnd = true;
-                                    
-                                    // 1. 首先取消 R1 的生成请求
-                                    try {
-                                        // 使用 axios 的 CancelToken 来取消请求
-                                        r1CancelToken.cancel('Reasoning content finished');
-                                        console.log('已发送取消请求给 R1 服务器');
-                                    } catch (cancelError) {
-                                        console.error('取消 R1 请求时出错:', cancelError);
-                                    }
-                                    
-                                    // 2. 然后关闭数据流
-                                    deepseekResponse.data.destroy();
-                                    
-                                    // 3. 为 Gemini 创建新的 cancelToken
-                                    const geminiCancelToken = axios.CancelToken.source();
-                                    
-                                    // 4. 继续后续的 Gemini 调用
-                                    const geminiMessages = [
-                                        ...messages,
-                                        ...(searchResults ? [{
-                                            role: 'system',
-                                            content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
-                                        }] : []),
-                                        { 
-                                            role: 'assistant', 
-                                            content: thinkingContent 
-                                        },
-                                        { 
-                                            role: 'user', 
-                                            content: RELAY_PROMPT 
-                                        }
-                                    ];
-
-                                    // 在 Gemini 请求发起时添加到活动请求列表
-                                    activeRequests.push({ 
-                                        modelType: 'Gemini', 
-                                        cancelTokenSource: geminiCancelToken 
-                                    });
-
-                                    // 修改为非流式请求
-                                    axios.post(
-                                        `${process.env.PROXY_URL2}/v1/chat/completions`,
-                                        {
-                                            model: Model_output_MODEL,
-                                            messages: geminiMessages,
-                                            max_tokens: Model_output_MAX_TOKENS,
-                                            temperature: Model_output_TEMPERATURE,
-                                            stream: false, // 改为非流式
-                                        },
-                                        {
-                                            headers: {
-                                                Authorization: `Bearer ${Model_output_API_KEY}`,
-                                                'Content-Type': 'application/json',
-                                            },
-                                            cancelToken: geminiCancelToken.token,
-                                            timeout: 30000,
-                                            'axios-retry': {
-                                                retries: 3,
-                                                retryDelay: (retryCount) => retryCount * 1000,
-                                                retryCondition: (error) => {
-                                                    return (
-                                                        axios.isNetworkError(error) ||
-                                                        error.code === 'ECONNABORTED' ||
-                                                        error.response?.status === 429 ||
-                                                        error.response?.status >= 500
-                                                    );
-                                                }
-                                            },
-                                        }
-                                    ).then(geminiResponse => {
-                                        console.log('Gemini 模型开始输出');
-                                        geminiResponseSent = true;
-                                        res.write('data: {"choices": [{"delta": {"content": "\\n辅助思考已结束，以上辅助思考内容用户不可见，请MODEL开始以中文作为主要语言进行正式输出</think>"}, "index": 0, "finish_reason": null}]}\n\n'); // 输出 </think> 标签
-                                        
-                                        // 获取完整的响应内容
-                                        const content = geminiResponse.data.choices[0].message.content;
-                                        
-                                        // 将完整内容作为一个块发送
-                                        const formattedChunk = {
-                                            id: `chatcmpl-${Date.now()}`,
-                                            object: 'chat.completion.chunk',
-                                            created: Math.floor(Date.now() / 1000),
-                                            model: HYBRID_MODEL_NAME,
-                                            choices: [{
-                                                delta: { content },
-                                                index: choiceIndex++,
-                                                finish_reason: null
-                                            }]
-                                        };
-                                        res.write(`data: ${JSON.stringify(formattedChunk)}\n\n`);
-                                        
-                                        // 发送完成信号
-                                        console.log('\n\nGemini response completed.'); 
-                                        res.write('data: [DONE]\n\n');
-                                        if (!res.writableEnded) {
-                                            res.end();
-                                        }
-                                        currentTask = null;
-                                        removeActiveRequest('Gemini');
-                                    }).catch(error => {
-                                        console.error('Gemini 模型调用失败');
-                                        console.error('Gemini 请求重试失败，返回 503 错误');
-                                        
-                                        if (!res.writableEnded) {
-                                            let errorMessage = 'Error calling Gemini API';
-                                            if (error.code === 'ECONNABORTED') {
-                                                errorMessage = 'Gemini 请求超时';
-                                                res.status(504).send({ error: errorMessage });
-                                            } else if (error.response?.status === 429) {
-                                                errorMessage = 'Gemini 请求频率超限';
-                                                res.status(429).send({ error: errorMessage });
-                                            } else if (error.config?.__retryCount >= 3) {
-                                                errorMessage = 'Gemini 多次重试后失败';
-                                                console.log('Gemini 请求重试失败，返回 503 错误');
-                                                res.status(503).send({ error: errorMessage });
-                                            }
-                                            else {
-                                                res.status(error.response?.status || 500).send({ error: errorMessage });
-                                            }
-                                            res.end();
-                                        }
-                                        currentTask = null;
-                                        removeActiveRequest('Gemini');
-                                    });
-                                }
-                            }
-                        } catch (error) {
-                            console.error('Error parsing Deepseek R1 chunk:', error);
-                        }
-                    }, 600);
-                });
-
-                deepseekResponse.data.on('end', () => {
-                    console.log('Deepseek response ended. receivedThinkingEnd:', receivedThinkingEnd);
-                    removeActiveRequest('R1');
-                    if (!geminiResponseSent && !res.writableEnded) {
-                        res.write('data: [DONE]\n\n');
-                        res.end();
-                    }
-                    currentTask = null;
-                });
-
-                deepseekResponse.data.on('error', async (error) => {
-                    // 如果是取消请求导致的错误，只输出简单日志
-                    if (axios.isCancel(error)) {
-                        console.log('R1 请求已取消:', error.message);
-                        return;
-                    }
-
-                    // 其他错误继续原有的处理逻辑
-                    console.error('Deepseek R1 请求出错:', error);
-                    
-                    if (error.code === 'ECONNRESET' || error.code === 'ECONNABORTED') {
-                        if (!geminiResponseSent && !res.headersSent && !res.writableEnded) {
-                            // 为 Gemini 创建新的 cancelToken
-                            const geminiCancelToken = axios.CancelToken.source();
-                            
-                            const geminiMessages = [
-                                ...messages,
-                                ...(searchResults ? [{
-                                    role: 'system',
-                                    content: `${process.env.GoogleSearch_Send_PROMPT}${searchResults}`
-                                }] : []),
-                                { 
-                                    role: 'system', 
-                                    content: '由于前置思考系统连接中断，请直接进行回复。请注意，你可以看到所有的搜索结果和图片内容。' 
-                                }
-                            ];
-
-                            try {
-                                await callGemini(geminiMessages, res, geminiCancelToken, originalRequest);
-                            } catch (geminiError) {
-                                console.error('Both R1 and Gemini failed:', geminiError);
-                                if (!res.headersSent && !res.writableEnded) {
-                                    res.status(500).json({
-                                        error: 'Connection interrupted',
-                                        message: '网络连接中断，请重新发送请求'
-                                    });
-                                }
-                            }
-                        }
-                        
-                        if (currentTask) {
-                            currentTask.cancelTokenSource.cancel('Connection interrupted');
-                            currentTask = null;
-                        }
-                        
-                        return;
-                    }
-                });
             }
+
         } catch (error) {
             console.error('请求处理错误:', error);
             if (!res.headersSent && !res.writableEnded) {
@@ -892,16 +787,16 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
     return new Promise((resolve, reject) => {
         const makeRequest = async () => {
             try {
-                // 模拟流式输出的结束信号
+                // 发送思考结束信号，确保思考内容和正式输出分开
                 const endThinkingChunk = {
                     id: `chatcmpl-${Date.now()}`,
                     object: 'chat.completion.chunk',
                     created: Math.floor(Date.now() / 1000),
                     model: HYBRID_MODEL_NAME,
                     choices: [{
-                        delta: {},  // 空的 delta 表示流的结束
+                        delta: { content: "\n\n</think>" },  // 明确结束思考标记
                         index: 0,
-                        finish_reason: "stop"  // 明确指定结束原因
+                        finish_reason: null
                     }]
                 };
                 res.write(`data: ${JSON.stringify(endThinkingChunk)}\n\n`);
@@ -945,7 +840,7 @@ function callGemini(messages, res, cancelTokenSource, originalRequest) {
                             'Content-Type': 'application/json',
                         },
                         cancelToken: cancelTokenSource.token,
-                        timeout: 30000,
+                        timeout: 300000,
                         'axios-retry': {
                             retries: 3,
                             retryDelay: (retryCount) => retryCount * 1000,
